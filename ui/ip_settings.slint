@@ -1,0 +1,196 @@
+import { LineEdit } from "std-widgets.slint";
+import { ActionButton } from "action_button.slint";
+
+export component IpSettingsDialog inherits Rectangle {
+    in property <int> language-index;
+    in property <bool> busy;
+    in property <string> mac;
+    in property <string> old-ip;
+    in property <string> old-mask;
+    in property <string> old-gateway;
+    in property <string> interface-ip;
+    in property <string> error-text;
+    in-out property <string> ip;
+    in-out property <string> mask;
+    in-out property <string> gateway;
+    callback apply(string, string, string, bool);
+    callback close();
+
+    private property <bool> confirm-save: false;
+    private property <bool> confirm-discard: false;
+    private property <bool> persistent: false;
+    private property <bool> dirty: root.ip != root.old-ip || root.mask != root.old-mask || root.gateway != root.old-gateway;
+
+    background: #111a27aa;
+    TouchArea { width: parent.width; height: parent.height; }
+
+    Rectangle {
+        width: Math.min(510px, parent.width - 36px);
+        height: 410px;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        background: #ffffff;
+        border-radius: 8px;
+        border-width: 1px;
+        border-color: #dce2e9;
+        VerticalLayout {
+            width: parent.width;
+            height: parent.height;
+            padding: 18px;
+            spacing: 8px;
+            Text {
+                height: 25px;
+                text: root.language-index == 1 ? "Thiết lập IP camera GigE" : "Configure GigE camera IP";
+                color: #172334;
+                font-size: 17px;
+                font-weight: 700;
+            }
+            Text {
+                height: 22px;
+                text: "MAC: " + root.mac + "  ·  NIC: " + root.interface-ip;
+                color: #53677f;
+                font-size: 11px;
+                overflow: elide;
+            }
+            Text {
+                height: 21px;
+                text: root.language-index == 1 ? "Địa chỉ IP" : "IP address";
+                color: #46566b;
+            }
+            LineEdit {
+                height: 32px;
+                text <=> root.ip;
+                enabled: !root.busy;
+            }
+            Text {
+                height: 21px;
+                text: "Subnet mask";
+                color: #46566b;
+            }
+            LineEdit {
+                height: 32px;
+                text <=> root.mask;
+                enabled: !root.busy;
+            }
+            Text {
+                height: 21px;
+                text: "Gateway (0.0.0.0 = none)";
+                color: #46566b;
+            }
+            LineEdit {
+                height: 32px;
+                text <=> root.gateway;
+                enabled: !root.busy;
+            }
+            Text {
+                height: 30px;
+                text: root.error-text;
+                color: #b42332;
+                font-size: 11px;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                height: 32px;
+                spacing: 8px;
+                ActionButton {
+                    text: root.language-index == 1 ? "Hủy" : "Cancel";
+                    tone: 0;
+                    enabled: !root.busy;
+                    clicked => {
+                        if (root.dirty) { root.confirm-discard = true; }
+                        else { root.close(); }
+                    }
+                }
+                Rectangle { horizontal-stretch: 1; background: transparent; }
+                ActionButton {
+                    text: root.language-index == 1 ? "IP tạm thời" : "Temporary IP";
+                    tone: 3;
+                    enabled: !root.busy;
+                    clicked => { root.persistent = false; root.confirm-save = true; }
+                }
+                ActionButton {
+                    text: root.language-index == 1 ? "Lưu IP cố định" : "Save static IP";
+                    tone: 2;
+                    enabled: !root.busy;
+                    clicked => { root.persistent = true; root.confirm-save = true; }
+                }
+            }
+            Text {
+                height: 30px;
+                text: root.language-index == 1
+                    ? "IP tạm mất khi khởi động lại camera; IP cố định được lưu trong camera."
+                    : "Temporary IP resets on camera restart; static IP is stored in camera.";
+                color: #53677f;
+                font-size: 11px;
+                wrap: word-wrap;
+            }
+        }
+    }
+
+    if root.confirm-save || root.confirm-discard : Rectangle {
+        width: parent.width;
+        height: parent.height;
+        background: #111a27aa;
+        TouchArea { width: parent.width; height: parent.height; }
+        Rectangle {
+            width: Math.min(420px, parent.width - 36px);
+            height: 172px;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            background: #ffffff;
+            border-radius: 8px;
+            VerticalLayout {
+                width: parent.width;
+                height: parent.height;
+                padding: 16px;
+                spacing: 9px;
+                Text {
+                    text: root.confirm-discard
+                        ? (root.language-index == 1 ? "Bỏ địa chỉ IP đang chỉnh?" : "Discard edited IP address?")
+                        : (root.language-index == 1 ? "Xác nhận đổi IP camera?" : "Confirm camera IP change?");
+                    color: #172334;
+                    font-weight: 700;
+                }
+                Text {
+                    text: root.confirm-discard ? ""
+                        : "MAC " + root.mac + "  ·  " + root.old-ip + " → " + root.ip + " / " + root.mask;
+                    color: #46566b;
+                    wrap: word-wrap;
+                    vertical-stretch: 1;
+                }
+                Text {
+                    text: root.confirm-save
+                        ? (root.persistent
+                            ? (root.language-index == 1 ? "Lưu cố định qua lần tắt/bật; tắt DHCP trên camera" : "Stored across restarts; disables camera DHCP")
+                            : (root.language-index == 1 ? "Chỉ tạm thời cho lần bật camera này" : "Temporary for this camera power cycle"))
+                        : "";
+                    color: #53677f;
+                    font-size: 11px;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    ActionButton {
+                        text: root.language-index == 1 ? "Hủy" : "Cancel";
+                        tone: 0;
+                        clicked => { root.confirm-save = false; root.confirm-discard = false; }
+                    }
+                    ActionButton {
+                        text: root.confirm-discard
+                            ? (root.language-index == 1 ? "Bỏ thay đổi" : "Discard")
+                            : (root.language-index == 1 ? "Xác nhận" : "Confirm");
+                        tone: root.confirm-discard ? 5 : 2;
+                        clicked => {
+                            if (root.confirm-discard) {
+                                root.confirm-discard = false;
+                                root.close();
+                            } else {
+                                root.confirm-save = false;
+                                root.apply(root.ip, root.mask, root.gateway, root.persistent);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,81 @@
+// Shared semantic button colors for camera operations. Tone: neutral 0,
+// blue 1, green 2, teal 3, amber 4, red 5, violet 6.
+export component ActionButton inherits Rectangle {
+    in property <string> text;
+    in property <int> tone: 0;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    private property <color> fill: root.tone == 1 ? #2457b5
+        : root.tone == 2 ? #087c56
+        : root.tone == 3 ? #087e8b
+        : root.tone == 4 ? #986007
+        : root.tone == 5 ? #b42332
+        : root.tone == 6 ? #6845a3 : #e9eef4;
+    private property <color> hover-fill: root.tone == 1 ? #1a4695
+        : root.tone == 2 ? #066746
+        : root.tone == 3 ? #066875
+        : root.tone == 4 ? #7d4e05
+        : root.tone == 5 ? #92202b
+        : root.tone == 6 ? #563a88 : #dce6f0;
+
+    min-width: 32px;
+    min-height: 31px;
+    preferred-width: label.preferred-width + 24px;
+    preferred-height: 31px;
+    horizontal-stretch: 0;
+    border-radius: 5px;
+    border-width: 1px;
+    border-color: root.enabled ? root.fill : #cbd5df;
+    background: !root.enabled ? #e6e9ee
+        : hit.pressed ? root.hover-fill
+        : hit.has-hover ? root.hover-fill : root.fill;
+    animate background { duration: 120ms; }
+    forward-focus: focus;
+    accessible-role: button;
+    accessible-enabled: root.enabled;
+    accessible-label: root.text;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+
+    label := Text {
+        width: parent.width - 16px;
+        height: parent.height;
+        x: 8px;
+        text: root.text;
+        color: !root.enabled ? #68788c : root.tone == 0 ? #24364b : #ffffff;
+        font-size: 12px;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        overflow: elide;
+        accessible-role: none;
+    }
+    hit := TouchArea {
+        width: parent.width;
+        height: parent.height;
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+    }
+    focus := FocusScope {
+        x: 0;
+        width: 0;
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+    if focus.has-focus && root.enabled : Rectangle {
+        width: parent.width + 4px;
+        height: parent.height + 4px;
+        x: -2px;
+        y: -2px;
+        border-width: 2px;
+        border-color: #172334;
+        border-radius: 7px;
+        background: transparent;
+    }
+}

@@ -1,0 +1,126 @@
+import { Button } from "std-widgets.slint";
+
+export component ImageOrientation inherits Rectangle {
+    background: #ffffff;
+    border-color: #dce2e9;
+    border-width: 1px;
+    border-radius: 8px;
+
+    in property <bool> connected;
+    in property <bool> busy;
+    in property <int> language-index;
+    in property <int> image-rotation-index;
+    in property <bool> flip-horizontal;
+    in property <bool> flip-vertical;
+    private property <string> current-angle: root.image-rotation-index == 1 ? "90°"
+        : root.image-rotation-index == 2 ? "180°"
+        : root.image-rotation-index == 3 ? "270°" : "0°";
+
+    callback rotate-clockwise();
+    callback toggle-horizontal();
+    callback toggle-vertical();
+    callback reset-image();
+
+    VerticalLayout {
+        padding: 10px;
+        spacing: 6px;
+
+        Text {
+            height: 22px;
+            text: root.language-index == 1 ? "XOAY / LẬT ẢNH" : "IMAGE ORIENTATION";
+            color: #46566b;
+            font-size: 13px;
+            font-weight: 700;
+        }
+
+        HorizontalLayout {
+            height: 38px;
+            spacing: 5px;
+            Text {
+                width: 42px;
+                text: root.language-index == 1 ? "Xoay" : "Turn";
+                color: #53677f;
+                font-size: 11px;
+                vertical-alignment: center;
+            }
+            Button {
+                width: 82px;
+                primary: true;
+                icon: @image-url("icons/orientation_90.svg");
+                icon-size: 18px;
+                colorize-icon: true;
+                text: "90°";
+                enabled: root.connected && !root.busy;
+                accessible-label: root.language-index == 1 ? "Xoay thêm 90 độ theo chiều kim đồng hồ" : "Rotate another 90 degrees clockwise";
+                Tooltip { text: root.language-index == 1 ? @markdown("Nhấn nhiều lần để xoay thêm 90° mỗi lần") : @markdown("Press repeatedly to rotate 90° each time"); }
+                clicked => { root.rotate-clockwise(); }
+            }
+            Text {
+                width: 96px;
+                text: (root.language-index == 1 ? "Hiện tại: " : "Current: ") + root.current-angle;
+                color: #53677f;
+                font-size: 11px;
+                vertical-alignment: center;
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
+
+        HorizontalLayout {
+            height: 38px;
+            spacing: 5px;
+            Text {
+                width: 42px;
+                text: root.language-index == 1 ? "Lật" : "Flip";
+                color: #53677f;
+                font-size: 11px;
+                vertical-alignment: center;
+            }
+            Button {
+                width: 68px;
+                icon: @image-url("icons/flip_horizontal.svg");
+                icon-size: 19px;
+                colorize-icon: true;
+                text: "X";
+                primary: root.flip-horizontal;
+                enabled: root.connected && !root.busy;
+                accessible-label: root.language-index == 1 ? "Lật ngang" : "Mirror horizontally";
+                Tooltip { text: root.language-index == 1 ? @markdown("Lật trái/phải sau khi xoay") : @markdown("Mirror left/right after rotation"); }
+                clicked => { root.toggle-horizontal(); }
+            }
+            Button {
+                width: 68px;
+                icon: @image-url("icons/flip_vertical.svg");
+                icon-size: 19px;
+                colorize-icon: true;
+                text: "Y";
+                primary: root.flip-vertical;
+                enabled: root.connected && !root.busy;
+                accessible-label: root.language-index == 1 ? "Lật dọc" : "Mirror vertically";
+                Tooltip { text: root.language-index == 1 ? @markdown("Lật trên/dưới sau khi xoay") : @markdown("Mirror top/bottom after rotation"); }
+                clicked => { root.toggle-vertical(); }
+            }
+            Button {
+                width: 38px;
+                primary: true;
+                icon: @image-url("icons/orientation_reset.svg");
+                icon-size: 19px;
+                colorize-icon: true;
+                enabled: root.connected && !root.busy;
+                accessible-label: root.language-index == 1 ? "Đặt lại hướng ảnh" : "Reset image orientation";
+                Tooltip { text: root.language-index == 1 ? @markdown("Đặt lại xoay và lật trong ứng dụng") : @markdown("Reset application rotation and mirroring"); }
+                clicked => { root.reset-image(); }
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
+
+        Text {
+            vertical-stretch: 1;
+            text: root.language-index == 1
+                ? "Chỉ xử lý trong ứng dụng · live view và PNG mới chụp"
+                : "App only · live view and new PNG captures";
+            color: #68788c;
+            font-size: 10px;
+            wrap: word-wrap;
+        }
+    }
+}

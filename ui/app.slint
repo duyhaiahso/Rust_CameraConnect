@@ -1,0 +1,739 @@
+import { Button, ComboBox, Palette, ScrollView, TextEdit } from "std-widgets.slint";
+import { CameraInspector, FeatureRow } from "inspector.slint";
+import { QuickSettings, QuickFeatureRow } from "quick_settings.slint";
+import { ImageOrientation } from "image_orientation.slint";
+import { QuickEditor } from "quick_editor.slint";
+import { ActionButton } from "action_button.slint";
+import { IpSettingsDialog } from "ip_settings.slint";
+
+export component AppWindow inherits Window {
+    title: "Basler Camera Test";
+    preferred-width: 1120px;
+    preferred-height: 760px;
+    min-width: 800px;
+    min-height: 600px;
+    background: #f1f3f6;
+
+    // This screen uses light surfaces, so native widgets need the same scheme
+    // even when Windows is configured for dark mode.
+    init => { Palette.color-scheme = ColorScheme.light; }
+
+    in-out property <[string]> cameras: [];
+    in-out property <int> selected-index: -1;
+    in-out property <bool> selected-camera-gige: false;
+    in-out property <bool> selected-camera-reachable: false;
+    in-out property <string> selected-camera-mac: "";
+    in-out property <string> selected-camera-ip: "";
+    in-out property <string> selected-camera-mask: "";
+    in-out property <string> selected-camera-gateway: "";
+    in-out property <string> selected-camera-interface: "";
+    in-out property <bool> ip-editor-open: false;
+    in-out property <string> ip-editor-address: "";
+    in-out property <string> ip-editor-mask: "";
+    in-out property <string> ip-editor-gateway: "";
+    in-out property <string> ip-error: "";
+    in-out property <bool> ip-editor-dirty: root.ip-editor-open &&
+        (root.ip-editor-address != root.selected-camera-ip || root.ip-editor-mask != root.selected-camera-mask ||
+         root.ip-editor-gateway != (root.selected-camera-gateway == "" ? "0.0.0.0" : root.selected-camera-gateway));
+    in-out property <int> language-index: 0;
+    in-out property <bool> connected: false;
+    in-out property <bool> live: false;
+    in-out property <bool> busy: false;
+    in-out property <bool> has-preview: false;
+    in-out property <bool> has-snapshot: false;
+    in-out property <image> preview;
+    in-out property <image> snapshot;
+    in-out property <string> status-text: "Ready";
+    in-out property <string> saved-path: "";
+    in-out property <string> log-text: "";
+    in-out property <int> page-index: 0;
+    in-out property <string> device-info: "";
+    in-out property <string> actual-fps: "—";
+    in-out property <string> configured-fps: "—";
+    in-out property <[FeatureRow]> feature-rows: [];
+    in-out property <[QuickFeatureRow]> quick-features: [];
+    in-out property <bool> rotate-available: false;
+    in-out property <bool> rotated-180: false;
+    in-out property <int> roi-ratio-index: 0;
+    in-out property <bool> roi-available: false;
+    in-out property <string> roi-max-text: "";
+    in-out property <bool> roi-input-valid: true;
+    in-out property <string> roi-paired-preview: "";
+    in-out property <int> image-rotation-index: 0;
+    in-out property <bool> transform-flip-horizontal: false;
+    in-out property <bool> transform-flip-vertical: false;
+    in-out property <bool> quick-editor-open: false;
+    private property <string> quick-editor-id: "";
+    private property <bool> confirm-rotate: false;
+    private property <bool> confirm-roi: false;
+    private property <bool> rotate-target: false;
+    in-out property <string> selected-feature-key: "";
+    in-out property <string> feature-name: "";
+    in-out property <string> feature-meta: "";
+    in-out property <string> feature-value: "";
+    in-out property <string> feature-description: "";
+    in-out property <string> feature-limits: "";
+    in-out property <[string]> feature-options: [];
+    in-out property <bool> feature-editable: false;
+    in-out property <string> feature-error: "";
+    in-out property <string> editor-value: "";
+    in-out property <string> feature-search: "";
+    private property <bool> editor-dirty: root.feature-editable && root.editor-value != root.feature-value;
+    private property <bool> confirm-disconnect: false;
+    in-out property <bool> confirm-exit: false;
+
+    callback refresh();
+    callback select-camera(int);
+    callback configure-ip(int, string, string, string, bool);
+    callback connect(int);
+    callback disconnect();
+    callback start-live();
+    callback stop-live();
+    callback capture();
+    callback change-language(int);
+    callback refresh-features();
+    callback search-features(string);
+    callback select-feature(string);
+    callback toggle-category(string);
+    callback apply-feature(string);
+    callback rotate-180(bool);
+    callback set-roi-ratio(int);
+    callback apply-max-roi();
+    callback preview-roi-value(string);
+    callback rotate-image-90();
+    callback toggle-image-horizontal();
+    callback toggle-image-vertical();
+    callback reset-image-transform();
+
+    VerticalLayout {
+        padding: 14px;
+        spacing: 10px;
+
+        HorizontalLayout {
+            height: 38px;
+            spacing: 12px;
+            Text {
+                text: "BASLER / CAMERA TEST";
+                color: #172334;
+                font-size: 24px;
+                font-weight: 700;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+            ComboBox {
+                width: 132px;
+                model: ["English", "Tiếng Việt"];
+                current-index <=> root.language-index;
+                selected(_) => { root.change-language(root.language-index); }
+            }
+        }
+
+        Rectangle {
+            height: 124px;
+            background: #ffffff;
+            border-radius: 8px;
+            border-width: 1px;
+            border-color: #dce2e9;
+            VerticalLayout {
+                width: parent.width;
+                height: parent.height;
+                padding: 8px;
+                spacing: 8px;
+                HorizontalLayout {
+                    height: 32px;
+                    spacing: 9px;
+                    Text {
+                        text: root.language-index == 1 ? "Camera" : "Camera";
+                        width: 67px;
+                        color: #46566b;
+                        vertical-alignment: center;
+                    }
+                    ComboBox {
+                        model: root.cameras;
+                        current-index <=> root.selected-index;
+                        enabled: !root.connected && !root.busy;
+                        horizontal-stretch: 1;
+                        selected(_) => { root.select-camera(root.selected-index); }
+                    }
+                    ActionButton {
+                        text: root.language-index == 1 ? "Thiết lập IP" : "Configure IP";
+                        tone: 4;
+                        enabled: !root.connected && !root.busy && root.selected-camera-gige;
+                        clicked => { root.ip-error = ""; root.ip-editor-open = true; }
+                    }
+                    ActionButton {
+                        text: root.language-index == 1 ? "Làm mới" : "Refresh";
+                        tone: 6;
+                        enabled: !root.connected && !root.busy;
+                        clicked => { root.busy = true; root.refresh(); }
+                    }
+                    ActionButton {
+                        text: root.connected
+                            ? (root.language-index == 1 ? "Ngắt kết nối" : "Disconnect")
+                            : (root.language-index == 1 ? "Kết nối" : "Connect");
+                        tone: root.connected ? 5 : 2;
+                        enabled: !root.busy && (root.connected || (root.selected-index >= 0 && root.selected-camera-reachable));
+                        clicked => {
+                            if (root.connected && root.editor-dirty) {
+                                root.confirm-disconnect = true;
+                            } else {
+                                root.busy = true;
+                                if (root.connected) { root.disconnect(); }
+                                else { root.connect(root.selected-index); }
+                            }
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    height: 32px;
+                    spacing: 9px;
+                    ActionButton {
+                        text: root.live
+                            ? (root.language-index == 1 ? "Dừng live" : "Stop live")
+                            : (root.language-index == 1 ? "Bắt đầu live" : "Start live");
+                        tone: root.live ? 4 : 2;
+                        enabled: root.connected && !root.busy && !root.editor-dirty;
+                        clicked => {
+                            root.busy = true;
+                            if (root.live) { root.stop-live(); }
+                            else { root.start-live(); }
+                        }
+                    }
+                    ActionButton {
+                        text: root.language-index == 1 ? "Chụp và lưu PNG" : "Capture PNG";
+                        tone: 3;
+                        enabled: root.connected && !root.busy;
+                        clicked => { root.busy = true; root.capture(); }
+                    }
+                    Text {
+                        text: root.connected
+                            ? (root.live ? "● LIVE" : (root.language-index == 1 ? "● ĐÃ KẾT NỐI" : "● CONNECTED"))
+                            : (root.language-index == 1 ? "○ CHƯA KẾT NỐI" : "○ DISCONNECTED");
+                        color: root.live ? #087c56 : #68788c;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                        horizontal-alignment: right;
+                    }
+                }
+                Text {
+                    height: 19px;
+                    text: root.selected-camera-gige
+                        ? (root.selected-camera-reachable
+                            ? "GigE  ·  IP " + root.selected-camera-ip + "  ·  MAC " + root.selected-camera-mac + "  ·  NIC " + root.selected-camera-interface
+                            : (root.language-index == 1 ? "SAI DẢI IP  ·  " : "WRONG SUBNET  ·  ") + root.selected-camera-ip + "  ·  MAC " + root.selected-camera-mac + "  ·  NIC " + root.selected-camera-interface)
+                        : "";
+                    color: root.selected-camera-reachable ? #53677f : #b42332;
+                    font-size: 11px;
+                    overflow: elide;
+                }
+            }
+        }
+
+        HorizontalLayout {
+            height: 32px;
+            spacing: 7px;
+            Button {
+                text: root.language-index == 1 ? "Xem ảnh" : "Monitor";
+                primary: root.page-index == 0;
+                clicked => { root.page-index = 0; }
+            }
+            Button {
+                text: root.language-index == 1 ? "Thông tin & thông số" : "Info & features";
+                primary: root.page-index == 1;
+                clicked => { root.page-index = 1; }
+            }
+            Button {
+                text: root.language-index == 1 ? "Ảnh chụp & log" : "Capture & log";
+                primary: root.page-index == 2;
+                clicked => { root.page-index = 2; }
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
+
+        if root.page-index == 0 : Rectangle {
+            vertical-stretch: 1;
+            min-width: 0px;
+            min-height: 0px;
+            preferred-width: 0px;
+            preferred-height: 0px;
+
+            monitor-scroll := ScrollView {
+                width: parent.width;
+                height: parent.height;
+                horizontal-scrollbar-policy: always-off;
+                content-height: Math.max(self.visible-height, root.width < 920px ? 695px : 525px);
+
+            VerticalLayout {
+                width: monitor-scroll.visible-width;
+                height: monitor-scroll.content-height;
+                spacing: 10px;
+
+            Rectangle {
+                vertical-stretch: 1;
+                min-height: 260px;
+                background: #ffffff;
+                border-radius: 8px;
+                border-width: 1px;
+                border-color: #dce2e9;
+                VerticalLayout {
+                    width: parent.width;
+                    height: parent.height;
+                    padding: 10px;
+                    spacing: 6px;
+                    Text {
+                        height: 20px;
+                        text: root.language-index == 1 ? "XEM TRỰC TIẾP" : "LIVE VIEW";
+                        color: #46566b;
+                        font-size: 13px;
+                        font-weight: 700;
+                    }
+                    Rectangle {
+                        vertical-stretch: 1;
+                        background: #111a27;
+                        Image {
+                            source: root.preview;
+                            width: parent.width;
+                            height: parent.height;
+                            image-fit: contain;
+                            accessible-label: "Live camera image";
+                        }
+                        Text {
+                            visible: !root.has-preview;
+                            width: parent.width;
+                            height: parent.height;
+                            text: root.language-index == 1 ? "Kết nối camera để xem ảnh" : "Connect a camera to view frames";
+                            color: #a8b5c5;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                        if root.live : Rectangle {
+                            x: 12px;
+                            y: 12px;
+                            width: 132px;
+                            height: 30px;
+                            background: #111a27db;
+                            border-radius: 4px;
+                            Text {
+                                width: parent.width;
+                                height: parent.height;
+                                text: "● LIVE  " + root.actual-fps + " FPS";
+                                color: #ffffff;
+                                font-size: 12px;
+                                font-weight: 700;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+            }
+
+            FlexboxLayout {
+                height: root.width < 920px ? 425px : 255px;
+                spacing: 10px;
+                flex-direction: root.width < 920px ? column : row;
+                flex-wrap: no-wrap;
+                alignment: stretch;
+                QuickSettings {
+                    horizontal-stretch: 3;
+                    min-width: 500px;
+                    height: 255px;
+                    connected: root.connected;
+                    busy: root.busy;
+                    dirty: root.editor-dirty;
+                    language-index: root.language-index;
+                    rows: root.quick-features;
+                    rotate-available: root.rotate-available;
+                    rotated-180: root.rotated-180;
+                    roi-ratio-index <=> root.roi-ratio-index;
+                    roi-available: root.roi-available;
+                    roi-max-text: root.roi-max-text;
+                    select-roi-ratio(index) => { root.set-roi-ratio(index); }
+                    apply-max-roi => { root.confirm-roi = true; }
+                    edit-feature(id) => {
+                        root.quick-editor-id = id;
+                        root.quick-editor-open = true;
+                        root.select-feature(id);
+                    }
+                    rotate-180(enabled) => {
+                        root.rotate-target = enabled;
+                        root.confirm-rotate = true;
+                    }
+                }
+                ImageOrientation {
+                    horizontal-stretch: 2;
+                    min-width: 350px;
+                    height: root.width < 920px ? 160px : 255px;
+                    connected: root.connected;
+                    busy: root.busy;
+                    language-index: root.language-index;
+                    image-rotation-index: root.image-rotation-index;
+                    flip-horizontal: root.transform-flip-horizontal;
+                    flip-vertical: root.transform-flip-vertical;
+                    rotate-clockwise => { root.rotate-image-90(); }
+                    toggle-horizontal => { root.toggle-image-horizontal(); }
+                    toggle-vertical => { root.toggle-image-vertical(); }
+                    reset-image => { root.reset-image-transform(); }
+                }
+            }
+            }
+            }
+        }
+
+        if root.page-index == 1 : CameraInspector {
+            vertical-stretch: 1;
+            connected: root.connected;
+            busy: root.busy;
+            language-index: root.language-index;
+            device-info: root.device-info;
+            actual-fps: root.actual-fps;
+            configured-fps: root.configured-fps;
+            feature-rows: root.feature-rows;
+            selected-key: root.selected-feature-key;
+            feature-name: root.feature-name;
+            feature-meta: root.feature-meta;
+            feature-value: root.feature-value;
+            feature-description: root.feature-description;
+            feature-limits: root.feature-limits;
+            feature-options: root.feature-options;
+            feature-editable: root.feature-editable;
+            feature-error: root.feature-error;
+            roi-input-valid: root.roi-input-valid;
+            roi-paired-preview: root.roi-paired-preview;
+            editor-value <=> root.editor-value;
+            search-value <=> root.feature-search;
+            refresh-features => { root.refresh-features(); }
+            search-features(value) => { root.search-features(value); }
+            select-feature(id) => { root.select-feature(id); }
+            toggle-category(id) => { root.toggle-category(id); }
+            apply-feature(value) => { root.busy = true; root.apply-feature(value); }
+            preview-roi-value(value) => { root.preview-roi-value(value); }
+        }
+
+        if root.page-index == 2 : HorizontalLayout {
+            vertical-stretch: 1;
+            spacing: 10px;
+            Rectangle {
+                horizontal-stretch: 3;
+                background: #ffffff;
+                border-radius: 8px;
+                border-width: 1px;
+                border-color: #dce2e9;
+                VerticalLayout {
+                    width: parent.width;
+                    height: parent.height;
+                    padding: 10px;
+                    spacing: 6px;
+                    Text {
+                        height: 21px;
+                        text: root.language-index == 1 ? "LOG CAMERA" : "CAMERA LOG";
+                        color: #46566b;
+                        font-size: 13px;
+                        font-weight: 700;
+                    }
+                    TextEdit {
+                        text: root.log-text;
+                        read-only: true;
+                        font-family: "Consolas";
+                        font-size: 12px;
+                        vertical-stretch: 1;
+                    }
+                }
+            }
+            Rectangle {
+                horizontal-stretch: 2;
+                min-width: 310px;
+                background: #ffffff;
+                border-radius: 8px;
+                border-width: 1px;
+                border-color: #dce2e9;
+                VerticalLayout {
+                    width: parent.width;
+                    height: parent.height;
+                    padding: 8px;
+                    spacing: 5px;
+                    Text {
+                        height: 20px;
+                        text: root.language-index == 1 ? "ẢNH ĐÃ CHỤP" : "LAST CAPTURE";
+                        color: #46566b;
+                        font-size: 12px;
+                        font-weight: 700;
+                    }
+                    Rectangle {
+                        vertical-stretch: 1;
+                        background: #111a27;
+                        Image {
+                            source: root.snapshot;
+                            width: parent.width;
+                            height: parent.height;
+                            image-fit: contain;
+                            accessible-label: "Last captured image";
+                        }
+                        Text {
+                            visible: !root.has-snapshot;
+                            width: parent.width;
+                            height: parent.height;
+                            text: root.language-index == 1 ? "Chưa có ảnh chụp" : "No capture yet";
+                            color: #a8b5c5;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                    Text {
+                        height: 24px;
+                        text: root.saved-path;
+                        color: #53677f;
+                        font-size: 10px;
+                        wrap: word-wrap;
+                        overflow: elide;
+                    }
+                }
+            }
+        }
+
+        Text {
+            height: 20px;
+            text: root.editor-dirty
+                ? (root.language-index == 1 ? "Thông số chưa lưu: Lưu hoặc Bỏ thay đổi trước khi chuyển live view." : "Unsaved setting: Save or Discard before changing live view.")
+                : root.status-text;
+            color: #53677f;
+            font-size: 12px;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+
+    if root.ip-editor-open : IpSettingsDialog {
+        width: parent.width;
+        height: parent.height;
+        language-index: root.language-index;
+        busy: root.busy;
+        mac: root.selected-camera-mac;
+        old-ip: root.selected-camera-ip;
+        old-mask: root.selected-camera-mask;
+        old-gateway: root.selected-camera-gateway == "" ? "0.0.0.0" : root.selected-camera-gateway;
+        interface-ip: root.selected-camera-interface;
+        error-text: root.ip-error;
+        ip <=> root.ip-editor-address;
+        mask <=> root.ip-editor-mask;
+        gateway <=> root.ip-editor-gateway;
+        apply(ip, mask, gateway, persistent) => {
+            root.busy = true;
+            root.configure-ip(root.selected-index, ip, mask, gateway, persistent);
+        }
+        close => { root.ip-editor-open = false; }
+    }
+
+    if root.quick-editor-open : QuickEditor {
+        width: parent.width;
+        height: parent.height;
+        busy: root.busy;
+        language-index: root.language-index;
+        request-id: root.quick-editor-id;
+        selected-key: root.selected-feature-key;
+        feature-name: root.feature-name;
+        feature-value: root.feature-value;
+        feature-limits: root.feature-limits;
+        feature-description: root.feature-description;
+        feature-error: root.feature-error;
+        roi-input-valid: root.roi-input-valid;
+        roi-paired-preview: root.roi-paired-preview;
+        feature-options: root.feature-options;
+        feature-editable: root.feature-editable;
+        editor-value <=> root.editor-value;
+        apply-feature(value) => { root.busy = true; root.apply-feature(value); }
+        preview-roi-value(value) => { root.preview-roi-value(value); }
+        close-editor => { root.quick-editor-open = false; }
+    }
+
+    if root.confirm-roi : Rectangle {
+        width: parent.width;
+        height: parent.height;
+        background: #111a2799;
+        TouchArea { width: parent.width; height: parent.height; }
+        Rectangle {
+            width: Math.min(410px, parent.width - 36px);
+            height: 160px;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            background: #ffffff;
+            border-radius: 8px;
+            VerticalLayout {
+                width: parent.width;
+                height: parent.height;
+                padding: 18px;
+                spacing: 12px;
+                Text {
+                    text: root.language-index == 1 ? "Xác nhận lưu vùng ảnh camera?" : "Save the camera image ROI?";
+                    color: #172334;
+                    font-weight: 700;
+                    font-size: 16px;
+                }
+                Text {
+                    text: (root.language-index == 1 ? "Kích thước tối đa, căn giữa: " : "Largest centered size: ") + root.roi-max-text;
+                    color: #53677f;
+                    vertical-stretch: 1;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Button {
+                        text: root.language-index == 1 ? "Hủy" : "Cancel";
+                        clicked => { root.confirm-roi = false; }
+                    }
+                    ActionButton {
+                        text: root.language-index == 1 ? "Xác nhận" : "Confirm";
+                        tone: 2;
+                        clicked => {
+                            root.confirm-roi = false;
+                            root.busy = true;
+                            root.apply-max-roi();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if root.confirm-rotate : Rectangle {
+        width: parent.width;
+        height: parent.height;
+        background: #111a2799;
+        TouchArea { width: parent.width; height: parent.height; }
+        Rectangle {
+            width: Math.min(390px, parent.width - 36px);
+            height: 165px;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            background: #ffffff;
+            border-radius: 8px;
+            VerticalLayout {
+                width: parent.width;
+                height: parent.height;
+                padding: 18px;
+                spacing: 12px;
+                Text {
+                    text: root.rotate-target
+                        ? (root.language-index == 1 ? "Xoay ảnh trên camera 180°?" : "Rotate the camera image 180°?")
+                        : (root.language-index == 1 ? "Tắt cả ReverseX và ReverseY?" : "Clear both ReverseX and ReverseY?");
+                    color: #172334;
+                    font-size: 16px;
+                    font-weight: 700;
+                }
+                Text {
+                    text: root.language-index == 1
+                        ? "Ứng dụng sẽ chỉnh ReverseX và ReverseY trong phiên kết nối này."
+                        : "This changes ReverseX and ReverseY for this connection session.";
+                    color: #53677f;
+                    wrap: word-wrap;
+                    vertical-stretch: 1;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Button {
+                        text: root.language-index == 1 ? "Hủy" : "Cancel";
+                        clicked => { root.confirm-rotate = false; }
+                    }
+                    ActionButton {
+                        text: root.language-index == 1 ? "Xác nhận" : "Confirm";
+                        tone: 6;
+                        clicked => {
+                            root.confirm-rotate = false;
+                            root.busy = true;
+                            root.rotate-180(root.rotate-target);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if root.confirm-disconnect : Rectangle {
+        width: parent.width;
+        height: parent.height;
+        background: #111a2799;
+        TouchArea { width: parent.width; height: parent.height; }
+        Rectangle {
+            width: 370px;
+            height: 145px;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            background: #ffffff;
+            border-radius: 8px;
+            VerticalLayout {
+                width: parent.width;
+                height: parent.height;
+                padding: 18px;
+                spacing: 10px;
+                Text {
+                    text: root.language-index == 1 ? "Bỏ thay đổi chưa lưu và ngắt kết nối?" : "Discard unsaved change and disconnect?";
+                    color: #172334;
+                    wrap: word-wrap;
+                    font-weight: 700;
+                    vertical-stretch: 1;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Button {
+                        text: root.language-index == 1 ? "Hủy" : "Cancel";
+                        clicked => { root.confirm-disconnect = false; }
+                    }
+                    ActionButton {
+                        text: root.language-index == 1 ? "Ngắt kết nối" : "Disconnect";
+                        tone: 5;
+                        clicked => {
+                            root.confirm-disconnect = false;
+                            root.editor-value = root.feature-value;
+                            root.ip-editor-open = false;
+                            root.busy = true;
+                            root.disconnect();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if root.confirm-exit : Rectangle {
+        width: parent.width;
+        height: parent.height;
+        background: #111a2799;
+        TouchArea { width: parent.width; height: parent.height; }
+        Rectangle {
+            width: 370px;
+            height: 145px;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            background: #ffffff;
+            border-radius: 8px;
+            VerticalLayout {
+                width: parent.width;
+                height: parent.height;
+                padding: 18px;
+                spacing: 10px;
+                Text {
+                    text: root.language-index == 1 ? "Bỏ thay đổi chưa lưu và thoát?" : "Discard unsaved change and exit?";
+                    color: #172334;
+                    wrap: word-wrap;
+                    font-weight: 700;
+                    vertical-stretch: 1;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Button {
+                        text: root.language-index == 1 ? "Hủy" : "Cancel";
+                        clicked => { root.confirm-exit = false; }
+                    }
+                    ActionButton {
+                        text: root.language-index == 1 ? "Thoát" : "Exit";
+                        tone: 5;
+                        clicked => {
+                            root.editor-value = root.feature-value;
+                            root.confirm-exit = false;
+                            root.close();
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

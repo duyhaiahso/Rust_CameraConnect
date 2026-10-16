@@ -1,0 +1,189 @@
+import { Button, ComboBox, LineEdit, TextEdit } from "std-widgets.slint";
+import { ActionButton } from "action_button.slint";
+
+export component QuickEditor inherits Rectangle {
+    background: #111a2799;
+
+    in property <bool> busy;
+    in property <int> language-index;
+    in property <string> request-id;
+    in property <string> selected-key;
+    in property <string> feature-name;
+    in property <string> feature-value;
+    in property <string> feature-limits;
+    in property <string> feature-description;
+    in property <string> feature-error;
+    in property <bool> roi-input-valid;
+    in property <string> roi-paired-preview;
+    in property <[string]> feature-options;
+    in property <bool> feature-editable;
+    in-out property <string> editor-value;
+
+    callback apply-feature(string);
+    callback preview-roi-value(string);
+    callback close-editor();
+
+    private property <bool> ready: root.request-id == root.selected-key && root.feature-name != "";
+    private property <bool> dirty: root.ready && root.editor-value != root.feature-value;
+    private property <bool> confirm-save: false;
+    private property <bool> confirm-discard: false;
+
+    TouchArea { width: parent.width; height: parent.height; }
+
+    Rectangle {
+        width: Math.min(510px, parent.width - 36px);
+        height: Math.min(410px, parent.height - 36px);
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        background: #ffffff;
+        border-radius: 8px;
+        border-width: 1px;
+        border-color: #dce2e9;
+        VerticalLayout {
+            width: parent.width;
+            height: parent.height;
+            padding: 18px;
+            spacing: 10px;
+            Text {
+                height: 28px;
+                text: root.ready ? root.feature-name : (root.language-index == 1 ? "Đang đọc thông số..." : "Loading camera setting...");
+                color: #172334;
+                font-size: 18px;
+                font-weight: 700;
+                overflow: elide;
+            }
+            Text {
+                height: 24px;
+                text: root.ready ? (root.language-index == 1 ? "Giá trị hiện tại: " : "Current value: ") + root.feature-value : "";
+                color: #24364b;
+                font-weight: 600;
+            }
+            Text {
+                height: 36px;
+                text: root.ready ? root.feature-limits : "";
+                color: #53677f;
+                font-size: 12px;
+                wrap: word-wrap;
+            }
+            TextEdit {
+                text: root.ready ? root.feature-description : "";
+                read-only: true;
+                vertical-stretch: 1;
+                font-size: 12px;
+            }
+            if root.ready && root.feature-editable : VerticalLayout {
+                height: root.roi-paired-preview == "" ? 62px : 84px;
+                spacing: 4px;
+                Text {
+                    text: root.language-index == 1 ? "Giá trị mới" : "New value";
+                    color: #46566b;
+                    font-size: 12px;
+                }
+                if root.feature-options.length > 0 : ComboBox {
+                    model: root.feature-options;
+                    current-value <=> root.editor-value;
+                    enabled: !root.busy;
+                }
+                if root.feature-options.length == 0 : LineEdit {
+                    text <=> root.editor-value;
+                    enabled: !root.busy;
+                    edited(value) => { root.preview-roi-value(value); }
+                }
+                if root.roi-paired-preview != "" : Text {
+                    text: root.roi-paired-preview;
+                    color: root.roi-input-valid ? #087c56 : #b42318;
+                    font-size: 11px;
+                    wrap: word-wrap;
+                }
+            }
+            if root.ready && !root.feature-editable : Text {
+                height: 28px;
+                text: root.language-index == 1 ? "Camera không cho ghi thông số này." : "This setting is not writable now.";
+                color: #68788c;
+                font-size: 12px;
+            }
+            Text {
+                height: 30px;
+                text: root.feature-error;
+                color: #b42318;
+                font-size: 12px;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                height: 34px;
+                spacing: 8px;
+                Button {
+                    text: root.language-index == 1 ? "Đóng" : "Close";
+                    enabled: !root.busy;
+                    clicked => {
+                        if (root.dirty) { root.confirm-discard = true; }
+                        else { root.close-editor(); }
+                    }
+                }
+                ActionButton {
+                    text: root.language-index == 1 ? "Lưu" : "Save";
+                    tone: 2;
+                    enabled: root.dirty && root.feature-editable && root.roi-input-valid && !root.busy;
+                    clicked => { root.confirm-save = true; }
+                }
+            }
+        }
+    }
+
+    if root.confirm-save || root.confirm-discard : Rectangle {
+        width: parent.width;
+        height: parent.height;
+        background: #111a2799;
+        TouchArea { width: parent.width; height: parent.height; }
+        Rectangle {
+            width: Math.min(390px, parent.width - 36px);
+            height: 155px;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            background: #ffffff;
+            border-radius: 8px;
+            VerticalLayout {
+                width: parent.width;
+                height: parent.height;
+                padding: 18px;
+                spacing: 12px;
+                Text {
+                    text: root.confirm-save
+                        ? (root.language-index == 1 ? "Xác nhận lưu thay đổi?" : "Save this camera change?")
+                        : (root.language-index == 1 ? "Bỏ thay đổi chưa lưu?" : "Discard unsaved change?");
+                    color: #172334;
+                    font-weight: 700;
+                    font-size: 16px;
+                }
+                Text {
+                    text: root.feature-name + ": " + root.feature-value + " → " + root.editor-value
+                        + (root.roi-paired-preview == "" ? "" : " · " + root.roi-paired-preview);
+                    color: #53677f;
+                    wrap: word-wrap;
+                    vertical-stretch: 1;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Button {
+                        text: root.language-index == 1 ? "Hủy" : "Cancel";
+                        clicked => { root.confirm-save = false; root.confirm-discard = false; }
+                    }
+                    ActionButton {
+                        text: root.language-index == 1 ? "Xác nhận" : "Confirm";
+                        tone: root.confirm-save ? 2 : 4;
+                        clicked => {
+                            if (root.confirm-save) {
+                                root.confirm-save = false;
+                                root.apply-feature(root.editor-value);
+                            } else {
+                                root.confirm-discard = false;
+                                root.editor-value = root.feature-value;
+                                root.close-editor();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

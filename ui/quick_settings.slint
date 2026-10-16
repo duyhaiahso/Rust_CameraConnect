@@ -1,0 +1,175 @@
+import { Button, ComboBox, ListView } from "std-widgets.slint";
+import { ActionButton } from "action_button.slint";
+
+export struct QuickFeatureRow {
+    id: string,
+    label: string,
+    label-vi: string,
+    value: string,
+    editable: bool,
+}
+
+export component QuickSettings inherits Rectangle {
+    background: #ffffff;
+    border-color: #dce2e9;
+    border-width: 1px;
+    border-radius: 8px;
+
+    in property <bool> connected;
+    in property <bool> busy;
+    in property <bool> dirty;
+    in property <int> language-index;
+    in property <[QuickFeatureRow]> rows;
+    in property <bool> rotate-available;
+    in property <bool> rotated-180;
+    in-out property <int> roi-ratio-index;
+    in property <bool> roi-available;
+    in property <string> roi-max-text;
+
+    callback edit-feature(string);
+    callback rotate-180(bool);
+    callback select-roi-ratio(int);
+    callback apply-max-roi();
+
+    VerticalLayout {
+        padding: 10px;
+        spacing: 5px;
+
+        Text {
+            height: 22px;
+            text: root.language-index == 1 ? "THÔNG SỐ CAMERA" : "CAMERA PARAMETERS";
+            color: #46566b;
+            font-size: 13px;
+            font-weight: 700;
+        }
+
+        HorizontalLayout {
+            height: 32px;
+            spacing: 6px;
+            Text {
+                width: 70px;
+                text: root.language-index == 1 ? "Tỉ lệ" : "Ratio";
+                color: #46566b;
+                font-size: 12px;
+                vertical-alignment: center;
+            }
+            ComboBox {
+                horizontal-stretch: 1;
+                model: ["Free / Tự do", "1:1", "4:3", "3:4", "16:9", "9:16", "3:2", "2:3", "5:4", "4:5", "21:9"];
+                current-index <=> root.roi-ratio-index;
+                enabled: root.connected && !root.busy && !root.dirty;
+                selected(_) => { root.select-roi-ratio(self.current-index); }
+            }
+            ActionButton {
+                text: root.language-index == 1 ? "Áp dụng tối đa" : "Apply max";
+                tone: 2;
+                enabled: root.roi-available && root.roi-ratio-index > 0 && root.roi-max-text != "" && !root.busy && !root.dirty;
+                clicked => { root.apply-max-roi(); }
+            }
+        }
+        Text {
+            height: 18px;
+            text: !root.connected
+                ? (root.language-index == 1 ? "Kết nối camera để chọn tỉ lệ" : "Connect a camera to choose a ratio")
+                : !root.roi-available
+                    ? (root.language-index == 1 ? "Chưa đọc được giới hạn ROI của camera" : "Camera ROI limits are unavailable")
+                : root.roi-ratio-index > 0 && root.roi-max-text == ""
+                    ? (root.language-index == 1 ? "Camera không có kích thước đúng tỉ lệ này" : "No exact camera size for this ratio")
+                : root.roi-ratio-index > 0
+                    ? (root.language-index == 1 ? "ROI tối đa, căn giữa: " : "Largest centered ROI: ") + root.roi-max-text
+                    : (root.language-index == 1 ? "Tự do: " : "Free: ") + root.roi-max-text;
+            color: #53677f;
+            font-size: 11px;
+        }
+
+        Rectangle {
+            height: 22px;
+            background: #edf2f7;
+            HorizontalLayout {
+                width: parent.width;
+                height: parent.height;
+                padding-left: 7px;
+                padding-right: 7px;
+                spacing: 5px;
+                Text {
+                    width: 140px;
+                    text: root.language-index == 1 ? "Mục" : "Setting";
+                    color: #53677f;
+                    font-size: 11px;
+                    vertical-alignment: center;
+                }
+                Text {
+                    horizontal-stretch: 1;
+                    text: root.language-index == 1 ? "Giá trị" : "Value";
+                    color: #53677f;
+                    font-size: 11px;
+                    vertical-alignment: center;
+                }
+                Text { width: 42px; text: ""; }
+            }
+        }
+
+        ListView {
+            vertical-stretch: 1;
+            for row in root.rows : Rectangle {
+                height: 30px;
+                width: parent.width;
+                background: #ffffff;
+                border-color: #e8edf3;
+                border-width: 1px;
+                HorizontalLayout {
+                    width: parent.width;
+                    height: parent.height;
+                    padding-left: 7px;
+                    padding-right: 7px;
+                    spacing: 5px;
+                    Text {
+                        width: 140px;
+                        text: root.language-index == 1 ? row.label-vi : row.label;
+                        color: #24364b;
+                        font-size: 11px;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    Text {
+                        horizontal-stretch: 1;
+                        text: row.value;
+                        color: row.editable ? #24364b : #68788c;
+                        font-size: 11px;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    ActionButton {
+                        width: 42px;
+                        text: root.language-index == 1 ? "Sửa" : "Edit";
+                        tone: 1;
+                        enabled: row.editable && !root.busy && !root.dirty;
+                        clicked => { root.edit-feature(row.id); }
+                    }
+                }
+            }
+        }
+
+        if root.rows.length == 0 : Text {
+            height: 24px;
+            text: root.connected
+                ? (root.language-index == 1 ? "Camera chưa có mục hỗ trợ." : "No supported controls found.")
+                : (root.language-index == 1 ? "Kết nối camera để xem thông số." : "Connect a camera to view settings.");
+            color: #68788c;
+            font-size: 11px;
+            wrap: word-wrap;
+        }
+
+        ActionButton {
+            height: 29px;
+            tone: 6;
+            text: root.connected && !root.rotate-available
+                ? (root.language-index == 1 ? "Xoay trên camera: không hỗ trợ" : "Camera rotation: unavailable")
+                : root.rotated-180
+                    ? (root.language-index == 1 ? "Tắt lật X/Y trên camera" : "Clear camera X/Y flips")
+                    : (root.language-index == 1 ? "Xoay 180° trên camera" : "Rotate camera 180°");
+            enabled: root.rotate-available && !root.busy && !root.dirty;
+            clicked => { root.rotate-180(!root.rotated-180); }
+        }
+    }
+}

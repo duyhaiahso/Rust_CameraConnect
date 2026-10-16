@@ -1,0 +1,310 @@
+import { Button, ComboBox, LineEdit, ListView, ScrollView, TextEdit } from "std-widgets.slint";
+import { ActionButton } from "action_button.slint";
+
+export struct FeatureRow {
+    id: string,
+    label: string,
+    category: bool,
+}
+
+export component CameraInspector inherits Rectangle {
+    background: #ffffff;
+    border-color: #dce2e9;
+    border-width: 1px;
+    border-radius: 8px;
+
+    in property <bool> connected;
+    in property <bool> busy;
+    in property <int> language-index;
+    in property <string> device-info;
+    in property <string> actual-fps;
+    in property <string> configured-fps;
+    in property <[FeatureRow]> feature-rows;
+    in property <string> selected-key;
+    in property <string> feature-name;
+    in property <string> feature-meta;
+    in property <string> feature-value;
+    in property <string> feature-description;
+    in property <string> feature-limits;
+    in property <[string]> feature-options;
+    in property <bool> feature-editable;
+    in property <string> feature-error;
+    in property <bool> roi-input-valid;
+    in property <string> roi-paired-preview;
+    in-out property <string> editor-value;
+    in-out property <string> search-value;
+
+    callback refresh-features();
+    callback search-features(string);
+    callback select-feature(string);
+    callback toggle-category(string);
+    callback apply-feature(string);
+    callback preview-roi-value(string);
+
+    private property <bool> confirm-save: false;
+    private property <bool> confirm-discard: false;
+    private property <string> pending-selection: "";
+    private property <bool> pending-category: false;
+    private property <bool> dirty: root.feature-editable && root.editor-value != root.feature-value;
+
+    VerticalLayout {
+        padding: 12px;
+        spacing: 9px;
+
+        HorizontalLayout {
+            height: 40px;
+            spacing: 12px;
+            Text {
+                text: root.language-index == 1 ? "THÔNG TIN VÀ THÔNG SỐ CAMERA" : "CAMERA INFO & FEATURES";
+                color: #172334;
+                font-size: 16px;
+                font-weight: 700;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+            Text {
+                text: (root.language-index == 1 ? "FPS thực: " : "Actual FPS: ") + root.actual-fps
+                    + "   |   " + (root.language-index == 1 ? "FPS camera: " : "Camera FPS: ") + root.configured-fps;
+                color: #087c56;
+                vertical-alignment: center;
+                font-weight: 600;
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 12px;
+            vertical-stretch: 1;
+
+            VerticalLayout {
+                preferred-width: 390px;
+                min-width: 280px;
+                spacing: 7px;
+                Text {
+                    height: 19px;
+                    text: root.language-index == 1 ? "THIẾT BỊ" : "DEVICE";
+                    color: #46566b;
+                    font-weight: 700;
+                }
+                TextEdit {
+                    height: 72px;
+                    text: root.device-info;
+                    read-only: true;
+                    font-family: "Consolas";
+                    font-size: 11px;
+                }
+                HorizontalLayout {
+                    height: 34px;
+                    spacing: 6px;
+                    LineEdit {
+                        text <=> root.search-value;
+                        placeholder-text: root.language-index == 1 ? "Tìm node GenICam" : "Search GenICam nodes";
+                        enabled: root.connected;
+                        edited(value) => { root.search-features(value); }
+                    }
+                    ActionButton {
+                        text: root.language-index == 1 ? "Làm mới" : "Refresh";
+                        tone: 6;
+                        enabled: root.connected && !root.busy && !root.dirty;
+                        clicked => { root.refresh-features(); }
+                    }
+                }
+                ListView {
+                    vertical-stretch: 1;
+                    for row in root.feature-rows : Rectangle {
+                        height: 29px;
+                        width: parent.width;
+                        background: root.selected-key == row.id ? #dceeff : touch.has-hover ? #f0f5fa : #ffffff;
+                        Text {
+                            x: 8px;
+                            width: parent.width - 16px;
+                            height: parent.height;
+                            text: row.label;
+                            color: row.category ? #23364d : #34465e;
+                            font-weight: row.category ? 600 : 400;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                        touch := TouchArea {
+                            width: parent.width;
+                            height: parent.height;
+                            clicked => {
+                                if (root.dirty && root.selected-key != row.id) {
+                                    root.pending-selection = row.id;
+                                    root.pending-category = row.category;
+                                    root.confirm-discard = true;
+                                } else {
+                                    if (root.selected-key != row.id) { root.select-feature(row.id); }
+                                    if (row.category) { root.toggle-category(row.id); }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Rectangle {
+                horizontal-stretch: 1;
+                background: #f8fafc;
+                border-color: #dce2e9;
+                border-width: 1px;
+                border-radius: 6px;
+                details-scroll := ScrollView {
+                    width: parent.width;
+                    height: parent.height;
+                    horizontal-scrollbar-policy: always-off;
+                    content-width: self.visible-width;
+                    content-height: Math.max(self.visible-height, 400px);
+                    VerticalLayout {
+                        width: details-scroll.content-width;
+                        height: details-scroll.content-height;
+                        padding: 12px;
+                        spacing: 9px;
+                    Text {
+                        height: 26px;
+                        text: root.feature-name == ""
+                            ? (root.language-index == 1 ? "Chọn một node để xem chi tiết" : "Select a node for details")
+                            : root.feature-name;
+                        color: #172334;
+                        font-size: 16px;
+                        font-weight: 700;
+                        overflow: elide;
+                    }
+                    Text {
+                        height: 40px;
+                        text: root.feature-meta;
+                        color: #53677f;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                    }
+                    Text {
+                        height: 22px;
+                        text: (root.language-index == 1 ? "Giá trị: " : "Value: ") + root.feature-value;
+                        color: #24364b;
+                        font-weight: 600;
+                        overflow: elide;
+                    }
+                    Text {
+                        height: 28px;
+                        text: root.feature-limits;
+                        color: #53677f;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                    }
+                    TextEdit {
+                        text: root.feature-description;
+                        read-only: true;
+                        vertical-stretch: 1;
+                        font-size: 12px;
+                    }
+                    if root.feature-editable : VerticalLayout {
+                        height: root.roi-paired-preview == "" ? 100px : 124px;
+                        spacing: 5px;
+                        Text {
+                            text: root.language-index == 1 ? "Giá trị mới" : "New value";
+                            color: #46566b;
+                        }
+                        if root.feature-options.length > 0 : ComboBox {
+                            model: root.feature-options;
+                            current-value <=> root.editor-value;
+                            enabled: !root.busy;
+                        }
+                        if root.feature-options.length == 0 : LineEdit {
+                            text <=> root.editor-value;
+                            enabled: !root.busy;
+                            edited(value) => { root.preview-roi-value(value); }
+                        }
+                        if root.roi-paired-preview != "" : Text {
+                            text: root.roi-paired-preview;
+                            color: root.roi-input-valid ? #087c56 : #b42318;
+                            font-size: 11px;
+                            wrap: word-wrap;
+                        }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            ActionButton {
+                                text: root.language-index == 1 ? "Lưu" : "Save";
+                                tone: 2;
+                                enabled: root.dirty && root.roi-input-valid && !root.busy;
+                                clicked => { root.confirm-save = true; }
+                            }
+                            Button {
+                                text: root.language-index == 1 ? "Bỏ thay đổi" : "Discard";
+                                enabled: root.dirty && !root.busy;
+                                clicked => {
+                                    root.editor-value = root.feature-value;
+                                    root.preview-roi-value(root.feature-value);
+                                }
+                            }
+                        }
+                    }
+                    Text {
+                        height: 34px;
+                        text: root.feature-error;
+                        color: #b42318;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                    }
+                    }
+                }
+            }
+        }
+    }
+
+    if root.confirm-save || root.confirm-discard : Rectangle {
+        width: parent.width;
+        height: parent.height;
+        background: #111a2799;
+        TouchArea { width: parent.width; height: parent.height; }
+        Rectangle {
+            width: 390px;
+            height: 155px;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            background: #ffffff;
+            border-radius: 8px;
+            VerticalLayout {
+                width: parent.width;
+                height: parent.height;
+                padding: 18px;
+                spacing: 12px;
+                Text {
+                    text: root.confirm-save
+                        ? (root.language-index == 1 ? "Xác nhận lưu thay đổi?" : "Save this camera change?")
+                        : (root.language-index == 1 ? "Bỏ thay đổi chưa lưu?" : "Discard unsaved change?");
+                    color: #172334;
+                    font-weight: 700;
+                    font-size: 16px;
+                }
+                Text {
+                    text: root.confirm-save ? root.feature-name + ": " + root.feature-value + " → " + root.editor-value
+                        + (root.roi-paired-preview == "" ? "" : " · " + root.roi-paired-preview) : root.feature-name;
+                    color: #53677f;
+                    wrap: word-wrap;
+                    vertical-stretch: 1;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Button {
+                        text: root.language-index == 1 ? "Hủy" : "Cancel";
+                        clicked => { root.confirm-save = false; root.confirm-discard = false; }
+                    }
+                    ActionButton {
+                        text: root.language-index == 1 ? "Xác nhận" : "Confirm";
+                        tone: root.confirm-save ? 2 : 4;
+                        clicked => {
+                            if (root.confirm-save) {
+                                root.apply-feature(root.editor-value);
+                                root.confirm-save = false;
+                            } else {
+                                root.editor-value = root.feature-value;
+                                root.select-feature(root.pending-selection);
+                                if (root.pending-category) { root.toggle-category(root.pending-selection); }
+                                root.confirm-discard = false;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
