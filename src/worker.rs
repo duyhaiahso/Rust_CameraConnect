@@ -2,15 +2,20 @@ use crate::camera::{CameraInfo, Converter, Device, Frame, Runtime, Stream};
 use crate::clock::Timestamp;
 use crate::files::{self, Logger};
 use crate::genicam::{self, FeatureDetail, FeatureKey, FeatureTree, MapKind};
+use crate::inference::{
+    self, Event as InferenceEvent, Runner as InferenceRunner, Source as ModelSource,
+};
+use crate::model_export;
 use crate::network::IpSettings;
 use crate::roi::{self, Ratio};
 use crate::transform::ImageTransform;
 use crate::{AppWindow, FeatureRow, QuickFeatureRow};
 use slint::{Model, Rgb8Pixel, SharedPixelBuffer, SharedString, Weak};
 use std::collections::HashSet;
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, TryRecvError};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::time::{Duration, Instant};
 
 pub enum Command {
@@ -41,12 +46,21 @@ pub enum Command {
     ToggleImageHorizontal,
     ToggleImageVertical,
     ResetImageTransform,
+    ExportModel(PathBuf),
+    ModelExported(Result<PathBuf, String>),
+    LoadModel(PathBuf),
+    UnloadModel,
+    SetModelSource(i32),
+    TestModelImage(PathBuf),
+    InferenceEvent(InferenceEvent),
     Shutdown,
 }
 
 struct UiSink {
     window: Weak<AppWindow>,
     preview_queued: Arc<AtomicBool>,
+    model_preview_queued: Arc<AtomicBool>,
+    model_result_revision: Arc<AtomicU64>,
 }
 
 impl UiSink {
@@ -54,6 +68,8 @@ impl UiSink {
         Self {
             window,
             preview_queued: Arc::new(AtomicBool::new(false)),
+            model_preview_queued: Arc::new(AtomicBool::new(false)),
+            model_result_revision: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -307,6 +323,122 @@ impl UiSink {
             ui.set_configured_fps(configured.into());
         });
     }
+
+    fn model_status(
+        &self,
+        ready: bool,
+        busy: bool,
+        english: String,
+        vietnamese: String,
+        path: String,
+    ) {
+        let _ = self.window.upgrade_in_event_loop(move |ui| {
+            ui.set_model_ready(ready);
+            ui.set_model_busy(busy);
+            ui.set_model_error(false);
+            ui.set_model_status(if ui.get_language_index() == 1 {
+                vietnamese.into()
+            } else {
+                english.into()
+            });
+            if !path.is_empty() {
+                ui.set_model_path(path.into());
+            }
+        });
+    }
+
+    fn model_image_error(&self, english: &'static str, vietnamese: &'static str) {
+        let _ = self.window.upgrade_in_event_loop(move |ui| {
+            ui.set_model_busy(false);
+            ui.set_model_error(true);
+            ui.set_model_status(if ui.get_language_index() == 1 {
+                vietnamese.into()
+            } else {
+                english.into()
+            });
+        });
+    }
+
+    fn model_clear_result(&self) {
+        self.model_result_revision.fetch_add(1, Ordering::AcqRel);
+        let _ = self.window.upgrade_in_event_loop(|ui| {
+            ui.set_model_has_result(false);
+            ui.set_model_count(0);
+            ui.set_model_run_ms("—".into());
+            ui.set_model_processing_ms("—".into());
+            ui.set_model_processed_fps("—".into());
+            ui.set_model_age_ms("—".into());
+            ui.set_model_preview(slint::Image::default());
+        });
+    }
+
+    fn model_source(&self, source: ModelSource, path: String) {
+        let _ = self.window.upgrade_in_event_loop(move |ui| {
+            ui.set_model_source_index(if source == ModelSource::Image { 1 } else { 0 });
+            ui.set_model_image_path(path.into());
+        });
+    }
+
+    fn model_clear_path(&self) {
+        let _ = self
+            .window
+            .upgrade_in_event_loop(|ui| ui.set_model_path("".into()));
+    }
+
+    fn model_result(&self, result: inference::ResultFrame) {
+        let is_live = result.source == ModelSource::Live;
+        if is_live && self.model_preview_queued.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let revision = self.model_result_revision.load(Ordering::Acquire);
+        let current_revision = Arc::clone(&self.model_result_revision);
+        let source_index = if is_live { 0 } else { 1 };
+        let pixels = SharedPixelBuffer::<Rgb8Pixel>::clone_from_slice(
+            &result.preview.rgb,
+            result.preview.width,
+            result.preview.height,
+        );
+        let count = result.count as i32;
+        let model_ms = format!("{:.0}", result.model_ms);
+        let processing = format!("{:.0}", result.processing_ms);
+        let fps = result
+            .processed_fps
+            .map(|value| format!("{value:.1}"))
+            .unwrap_or_else(|| "—".to_owned());
+        let age = result
+            .age_ms
+            .map(|value| value.to_string())
+            .unwrap_or_default();
+        let queued = Arc::clone(&self.model_preview_queued);
+        if self
+            .window
+            .upgrade_in_event_loop(move |ui| {
+                if current_revision.load(Ordering::Acquire) != revision
+                    || ui.get_model_source_index() != source_index
+                {
+                    if is_live {
+                        queued.store(false, Ordering::Release);
+                    }
+                    return;
+                }
+                ui.set_model_count(count);
+                ui.set_model_run_ms(model_ms.into());
+                ui.set_model_processing_ms(processing.into());
+                ui.set_model_processed_fps(fps.into());
+                ui.set_model_age_ms(age.into());
+                ui.set_model_preview(slint::Image::from_rgb8(pixels));
+                ui.set_model_has_result(true);
+                if is_live {
+                    queued.store(false, Ordering::Release);
+                }
+            })
+            .is_err()
+        {
+            if is_live {
+                self.model_preview_queued.store(false, Ordering::Release);
+            }
+        }
+    }
 }
 
 fn display_pixels(frame: &Frame, transform: ImageTransform) -> SharedPixelBuffer<Rgb8Pixel> {
@@ -342,8 +474,8 @@ fn display_pixels(frame: &Frame, transform: ImageTransform) -> SharedPixelBuffer
     pixels
 }
 
-pub fn run(receiver: Receiver<Command>, window: Weak<AppWindow>) {
-    let mut worker = Worker::new(UiSink::new(window));
+pub fn run(receiver: Receiver<Command>, sender: Sender<Command>, window: Weak<AppWindow>) {
+    let mut worker = Worker::new(UiSink::new(window), sender);
     worker.refresh();
     loop {
         let command = if worker.stream.is_some() {
@@ -366,6 +498,14 @@ pub fn run(receiver: Receiver<Command>, window: Weak<AppWindow>) {
 
 struct Worker {
     ui: UiSink,
+    sender: Sender<Command>,
+    inference: Option<InferenceRunner>,
+    model_generation: u64,
+    live_epoch: u64,
+    model_ready: bool,
+    model_source: ModelSource,
+    model_image_path: Option<PathBuf>,
+    exporting_model: bool,
     logger: Option<Logger>,
     runtime: Option<Runtime>,
     cameras: Vec<CameraInfo>,
@@ -375,6 +515,7 @@ struct Worker {
     stream: Option<Stream>,
     last_frame: Option<Arc<Frame>>,
     last_frame_at: Option<Instant>,
+    last_preview_at: Option<Instant>,
     last_received_at: Option<Instant>,
     live_started_at: Option<Instant>,
     no_frame_warned: bool,
@@ -393,13 +534,28 @@ struct Worker {
 }
 
 impl Worker {
-    fn new(ui: UiSink) -> Self {
+    fn new(ui: UiSink, sender: Sender<Command>) -> Self {
         let logger = Logger::new();
         if let Err(error) = &logger {
             ui.log(format!("File logging unavailable: {error}"));
         }
+        let inference = match InferenceRunner::new(sender.clone()) {
+            Ok(runner) => Some(runner),
+            Err(error) => {
+                ui.model_status(false, false, error.clone(), error, String::new());
+                None
+            }
+        };
         let worker = Self {
             ui,
+            sender,
+            inference,
+            model_generation: 0,
+            live_epoch: 0,
+            model_ready: false,
+            model_source: ModelSource::Live,
+            model_image_path: None,
+            exporting_model: false,
             logger: logger.ok(),
             runtime: None,
             cameras: Vec::new(),
@@ -409,6 +565,7 @@ impl Worker {
             stream: None,
             last_frame: None,
             last_frame_at: None,
+            last_preview_at: None,
             last_received_at: None,
             live_started_at: None,
             no_frame_warned: false,
@@ -712,6 +869,7 @@ impl Worker {
             .ok_or_else(|| "Connect a camera first".to_owned())?;
         self.stream = Some(Stream::start(device)?);
         self.last_frame_at = None;
+        self.last_preview_at = None;
         self.last_received_at = None;
         self.live_started_at = Some(Instant::now());
         self.no_frame_warned = false;
@@ -1432,6 +1590,245 @@ impl Worker {
             Command::ResetImageTransform => {
                 self.update_image_transform(ImageTransform::default());
             }
+            Command::ExportModel(path) => {
+                if self.exporting_model {
+                    return;
+                }
+                self.exporting_model = true;
+                self.model_ready = false;
+                if let Some(inference) = &self.inference {
+                    self.model_generation = inference.unload();
+                }
+                self.ui.model_clear_result();
+                self.ui.model_clear_path();
+                self.ui.model_status(
+                    false,
+                    true,
+                    "Exporting ONNX…".to_owned(),
+                    "Đang xuất ONNX…".to_owned(),
+                    String::new(),
+                );
+                let sender = self.sender.clone();
+                let spawned = std::thread::Builder::new()
+                    .name("onnx-export".to_owned())
+                    .spawn(move || {
+                        let result = model_export::export(&path);
+                        let _ = sender.send(Command::ModelExported(result));
+                    });
+                if let Err(error) = spawned {
+                    self.exporting_model = false;
+                    let message = format!("Could not start ONNX export: {error}");
+                    self.ui
+                        .model_status(false, false, message.clone(), message, String::new());
+                }
+            }
+            Command::ModelExported(result) => {
+                self.exporting_model = false;
+                match result {
+                    Ok(path) => {
+                        self.log("INFO", format!("ONNX model exported: {}", path.display()));
+                        self.handle(Command::LoadModel(path));
+                    }
+                    Err(error) => {
+                        self.log("ERROR", error.clone());
+                        self.ui
+                            .model_status(false, false, error.clone(), error, String::new());
+                    }
+                }
+            }
+            Command::LoadModel(path) => {
+                self.model_ready = false;
+                self.ui.model_clear_result();
+                self.ui.model_status(
+                    false,
+                    true,
+                    "Loading ONNX model…".to_owned(),
+                    "Đang mở model ONNX…".to_owned(),
+                    path.display().to_string(),
+                );
+                if let Some(inference) = &self.inference {
+                    self.model_generation = inference.load(path);
+                } else {
+                    self.ui.model_status(
+                        false,
+                        false,
+                        "Inference worker is unavailable".to_owned(),
+                        "Luồng AI không khả dụng".to_owned(),
+                        String::new(),
+                    );
+                }
+            }
+            Command::UnloadModel => {
+                self.model_ready = false;
+                self.ui.model_clear_result();
+                self.ui.model_clear_path();
+                self.ui.model_status(
+                    false,
+                    false,
+                    "Model stopped".to_owned(),
+                    "Đã dừng AI".to_owned(),
+                    String::new(),
+                );
+                if let Some(inference) = &self.inference {
+                    self.model_generation = inference.unload();
+                }
+            }
+            Command::SetModelSource(index) => {
+                let source = if index == 1 {
+                    ModelSource::Image
+                } else {
+                    ModelSource::Live
+                };
+                if self.model_source == source {
+                    return;
+                }
+                self.model_source = source;
+                if let Some(inference) = &self.inference {
+                    self.live_epoch = inference.clear_frames();
+                }
+                self.ui.model_clear_result();
+                self.ui.model_source(
+                    source,
+                    self.model_image_path
+                        .as_ref()
+                        .map(|path| path.display().to_string())
+                        .unwrap_or_default(),
+                );
+                if source == ModelSource::Image {
+                    if let Some(path) = self.model_image_path.clone().filter(|_| self.model_ready) {
+                        self.handle(Command::TestModelImage(path));
+                    } else if self.model_ready {
+                        self.ui.model_status(
+                            true,
+                            false,
+                            "Choose an image to test".to_owned(),
+                            "Chọn ảnh để thử model".to_owned(),
+                            String::new(),
+                        );
+                    }
+                } else if self.model_ready {
+                    self.ui.model_status(
+                        true,
+                        false,
+                        if self.stream.is_some() {
+                            "Model running"
+                        } else {
+                            "Model ready; start live view"
+                        }
+                        .to_owned(),
+                        if self.stream.is_some() {
+                            "AI đang xử lý"
+                        } else {
+                            "Model sẵn sàng; bật live view"
+                        }
+                        .to_owned(),
+                        String::new(),
+                    );
+                }
+            }
+            Command::TestModelImage(path) => {
+                if !self.model_ready {
+                    self.ui.model_status(
+                        false,
+                        false,
+                        "Open an ONNX model first".to_owned(),
+                        "Mở model ONNX trước".to_owned(),
+                        String::new(),
+                    );
+                    return;
+                }
+                self.model_source = ModelSource::Image;
+                self.model_image_path = Some(path.clone());
+                self.ui
+                    .model_source(ModelSource::Image, path.display().to_string());
+                self.ui.model_clear_result();
+                self.ui.model_status(
+                    true,
+                    true,
+                    "Processing test image...".to_owned(),
+                    "Đang xử lý ảnh thử...".to_owned(),
+                    String::new(),
+                );
+                if let Some(inference) = &self.inference {
+                    self.live_epoch = inference.test_image(path);
+                }
+            }
+            Command::InferenceEvent(event) => match event {
+                InferenceEvent::Loaded(generation, path) => {
+                    if generation == self.model_generation {
+                        self.model_ready = true;
+                        self.log("INFO", format!("ONNX model loaded: {}", path.display()));
+                        let (english, vietnamese) = if self.model_source == ModelSource::Image {
+                            ("Model ready; choose an image", "Model sẵn sàng; chọn ảnh")
+                        } else if self.stream.is_some() {
+                            ("Model running", "AI đang xử lý")
+                        } else {
+                            (
+                                "Model ready; start live view",
+                                "Model đã sẵn sàng; bật live view",
+                            )
+                        };
+                        self.ui.model_status(
+                            true,
+                            false,
+                            english.to_owned(),
+                            vietnamese.to_owned(),
+                            path.display().to_string(),
+                        );
+                    }
+                }
+                InferenceEvent::Unloaded(generation) => {
+                    if generation == self.model_generation && !self.exporting_model {
+                        self.model_ready = false;
+                        self.log("INFO", "ONNX model stopped".to_owned());
+                        self.ui.model_status(
+                            false,
+                            false,
+                            "Model stopped".to_owned(),
+                            "Đã dừng AI".to_owned(),
+                            String::new(),
+                        );
+                    }
+                }
+                InferenceEvent::Failed(generation, error) => {
+                    if generation == self.model_generation {
+                        self.model_ready = false;
+                        self.log("ERROR", format!("Model inference: {error}"));
+                        self.ui.model_clear_result();
+                        self.ui
+                            .model_status(false, false, error.clone(), error, String::new());
+                    }
+                }
+                InferenceEvent::ImageFailed(generation, epoch, error) => {
+                    if generation == self.model_generation
+                        && epoch == self.live_epoch
+                        && self.model_source == ModelSource::Image
+                    {
+                        self.log("ERROR", error.detail());
+                        self.ui.model_clear_result();
+                        let (english, vietnamese) = error.ui_messages();
+                        self.ui.model_image_error(english, vietnamese);
+                    }
+                }
+                InferenceEvent::Result(result) => {
+                    if result.generation == self.model_generation
+                        && result.frame_epoch == self.live_epoch
+                        && result.source == self.model_source
+                        && (result.source == ModelSource::Image || self.stream.is_some())
+                    {
+                        if result.source == ModelSource::Image {
+                            self.ui.model_status(
+                                true,
+                                false,
+                                "Test image processed".to_owned(),
+                                "Đã xử lý ảnh thử".to_owned(),
+                                String::new(),
+                            );
+                        }
+                        self.ui.model_result(result);
+                    }
+                }
+            },
             Command::Shutdown => {}
         }
     }
@@ -1445,10 +1842,17 @@ impl Worker {
             self.stop_live();
             return;
         };
-        let convert = !self.ui.preview_pending()
+        let preview_due = !self.ui.preview_pending()
             && self
-                .last_frame_at
+                .last_preview_at
                 .is_none_or(|at| at.elapsed() >= Duration::from_millis(66));
+        let infer_due = self.model_ready
+            && self.model_source == ModelSource::Live
+            && self
+                .inference
+                .as_ref()
+                .is_some_and(InferenceRunner::wants_live_frame);
+        let convert = preview_due || infer_due;
         let before = stream.received_frames();
         let result = stream.next_frame(converter, convert);
         if stream.received_frames() > before {
@@ -1461,8 +1865,17 @@ impl Worker {
         match result {
             Ok(Some(frame)) => {
                 self.last_frame_at = Some(Instant::now());
-                self.ui.frame(&frame, false, self.image_transform);
-                self.last_frame = Some(Arc::new(frame));
+                let frame = Arc::new(frame);
+                if infer_due {
+                    if let Some(inference) = &self.inference {
+                        inference.submit(Arc::clone(&frame), self.image_transform);
+                    }
+                }
+                if preview_due {
+                    self.ui.frame(&frame, false, self.image_transform);
+                    self.last_preview_at = self.last_frame_at;
+                }
+                self.last_frame = Some(frame);
             }
             Ok(None) => {
                 if self
@@ -1545,6 +1958,12 @@ impl Worker {
     }
 
     fn stop_live(&mut self) {
+        if self.model_source == ModelSource::Live {
+            if let Some(inference) = &self.inference {
+                self.live_epoch = inference.clear_frames();
+            }
+            self.ui.model_clear_result();
+        }
         if let Some(mut stream) = self.stream.take() {
             for error in stream.stop() {
                 self.log("WARN", error);
@@ -1600,6 +2019,7 @@ impl Worker {
         }
         self.last_frame = None;
         self.last_frame_at = None;
+        self.last_preview_at = None;
         self.last_received_at = None;
         self.ui.clear_preview();
         self.feature_tree = None;

@@ -1,0 +1,219 @@
+import { ActionButton } from "action_button.slint";
+
+export component ModelPanel inherits Rectangle {
+    in property <int> language-index;
+    in property <string> pt-path;
+    in property <string> onnx-path;
+    in property <string> image-path;
+    in property <int> source-index;
+    in property <string> status;
+    in property <bool> ready;
+    in property <bool> busy;
+    in property <bool> error;
+    in property <bool> has-result;
+    in property <int> count;
+    in property <string> model-ms;
+    in property <string> processing-ms;
+    in property <string> processed-fps;
+    in property <string> age-ms;
+    in property <image> result-image;
+    callback pick-pt();
+    callback export-model(string);
+    callback pick-onnx();
+    callback unload-model();
+    callback select-source(int);
+    callback pick-image();
+
+    background: #ffffff;
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: #dce2e9;
+
+    HorizontalLayout {
+        width: parent.width;
+        height: parent.height;
+        padding: 10px;
+        spacing: 12px;
+
+        VerticalLayout {
+            width: 330px;
+            spacing: 5px;
+            Text {
+                height: 20px;
+                text: root.language-index == 1 ? "KIỂM TRA MODEL" : "MODEL TEST";
+                color: #46566b;
+                font-size: 13px;
+                font-weight: 700;
+            }
+            HorizontalLayout {
+                height: 31px;
+                spacing: 6px;
+                ActionButton {
+                    text: root.language-index == 1 ? "Chọn .pt" : "Choose .pt";
+                    tone: 1;
+                    enabled: !root.busy;
+                    clicked => { root.pick-pt(); }
+                }
+                ActionButton {
+                    text: root.language-index == 1 ? "Xuất ONNX" : "Export ONNX";
+                    tone: 3;
+                    enabled: !root.busy && root.pt-path != "";
+                    clicked => { root.export-model(root.pt-path); }
+                }
+                ActionButton {
+                    text: root.language-index == 1 ? "Mở ONNX" : "Open ONNX";
+                    tone: 6;
+                    enabled: !root.busy;
+                    clicked => { root.pick-onnx(); }
+                }
+            }
+            Text {
+                height: 18px;
+                text: root.pt-path == "" ? (root.language-index == 1 ? "Chưa chọn tệp .pt" : "No .pt file selected") : root.pt-path;
+                color: #61748c;
+                font-size: 11px;
+                overflow: elide;
+            }
+            Text {
+                height: 18px;
+                text: root.onnx-path == "" ? (root.language-index == 1 ? "Chưa tải model ONNX" : "No ONNX model loaded") : root.onnx-path;
+                color: #61748c;
+                font-size: 11px;
+                overflow: elide;
+            }
+            HorizontalLayout {
+                height: 31px;
+                spacing: 6px;
+                ActionButton {
+                    text: "Live";
+                    tone: root.source-index == 0 ? 2 : 0;
+                    enabled: root.ready;
+                    clicked => { root.select-source(0); }
+                }
+                ActionButton {
+                    text: root.language-index == 1 ? "Ảnh" : "Image";
+                    tone: root.source-index == 1 ? 2 : 0;
+                    enabled: root.ready;
+                    clicked => { root.select-source(1); }
+                }
+                ActionButton {
+                    text: root.language-index == 1 ? "Chọn ảnh..." : "Choose image...";
+                    tone: 1;
+                    enabled: root.ready && !root.busy;
+                    clicked => { root.pick-image(); }
+                }
+            }
+            HorizontalLayout {
+                height: 31px;
+                spacing: 8px;
+                ActionButton {
+                    text: root.language-index == 1 ? "Dừng AI" : "Stop AI";
+                    tone: 5;
+                    enabled: root.ready && !root.busy;
+                    clicked => { root.unload-model(); }
+                }
+                Text {
+                    text: root.status;
+                    color: root.error ? #b42332 : root.ready ? #087c56 : #6b7685;
+                    font-size: 11px;
+                    overflow: elide;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+            }
+            Rectangle { vertical-stretch: 1; }
+            Text {
+                height: 16px;
+                text: root.source-index == 1
+                    ? (root.image-path == "" ? (root.language-index == 1 ? "Chưa chọn ảnh thử" : "No test image selected") : root.image-path)
+                    : (root.language-index == 1 ? "Đếm mỗi khung hình; không cộng dồn" : "Count per frame; no accumulation");
+                color: #61748c;
+                font-size: 11px;
+                overflow: elide;
+            }
+        }
+
+        Rectangle {
+            width: 1px;
+            background: #dce2e9;
+        }
+
+        VerticalLayout {
+            horizontal-stretch: 1;
+            min-width: 0px;
+            spacing: 6px;
+            VerticalLayout {
+                height: 56px;
+                spacing: 2px;
+                HorizontalLayout {
+                    height: 28px;
+                    spacing: 16px;
+                    Text {
+                        text: (root.language-index == 1 ? "Số đếm  " : "Count  ") + (root.has-result ? root.count + "" : "—");
+                        color: #172334;
+                        font-size: 21px;
+                        font-weight: 700;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: "Model  " + root.model-ms + " ms";
+                        color: #2457b5;
+                        font-size: 13px;
+                        font-weight: 700;
+                        vertical-alignment: center;
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                }
+                HorizontalLayout {
+                    height: 26px;
+                    spacing: 18px;
+                    Text {
+                        text: (root.language-index == 1 ? "Xử lý tổng  " : "Total processing  ") + root.processing-ms + " ms";
+                        color: #46566b;
+                        font-size: 13px;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: root.source-index == 1
+                            ? (root.language-index == 1 ? "Ảnh thử" : "Test image")
+                            : "AI  " + root.processed-fps + " FPS";
+                        color: #087e8b;
+                        font-size: 13px;
+                        font-weight: 700;
+                        vertical-alignment: center;
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                }
+            }
+            Rectangle {
+                vertical-stretch: 1;
+                background: #111a27;
+                Image {
+                    source: root.result-image;
+                    width: parent.width;
+                    height: parent.height;
+                    image-fit: contain;
+                    accessible-label: "Last processed frame with object markers";
+                }
+                if !root.has-result : Text {
+                    width: parent.width;
+                    height: parent.height;
+                    text: root.source-index == 1
+                        ? (root.language-index == 1 ? "Mở ONNX rồi chọn ảnh để thử" : "Open ONNX and choose an image")
+                        : (root.language-index == 1 ? "Mở model và bật live view để xem kết quả" : "Open a model and start live view");
+                    color: #a8b5c5;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+            Text {
+                height: 16px;
+                text: root.has-result && root.source-index == 0
+                    ? (root.language-index == 1 ? "Độ trễ khung khi xử lý: " : "Frame latency at result: ") + root.age-ms + " ms"
+                    : "";
+                color: #61748c;
+                font-size: 11px;
+            }
+        }
+    }
+}

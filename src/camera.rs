@@ -587,7 +587,7 @@ impl Stream {
     pub fn next_frame(&mut self, converter: &Converter, convert: bool) -> Result<Option<Frame>> {
         let mut ready = 0;
         check("Wait for frame", unsafe {
-            ffi::PylonWaitObjectWait(self.wait, 80, &mut ready)
+            ffi::PylonWaitObjectWait(self.wait, 20, &mut ready)
         })?;
         if ready == 0 {
             return Ok(None);

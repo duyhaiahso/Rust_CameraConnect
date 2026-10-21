@@ -2,6 +2,8 @@ mod camera;
 mod clock;
 mod files;
 mod genicam;
+mod inference;
+mod model_export;
 mod network;
 mod pylon_ffi;
 mod roi;
@@ -26,6 +28,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for camera in cameras {
             println!("{}", camera.label);
         }
+        return Ok(());
+    }
+    if let Some(position) = args.iter().position(|arg| arg == "--infer-image") {
+        let model = args
+            .get(position + 1)
+            .ok_or("--infer-image requires a model path")?;
+        let image = args
+            .get(position + 2)
+            .ok_or("--infer-image requires an image path")?;
+        let output = args.get(position + 3).map(std::path::Path::new);
+        return inference::infer_image(model.as_ref(), image.as_ref(), output).map_err(Into::into);
+    }
+    if let Some(position) = args.iter().position(|arg| arg == "--benchmark-image") {
+        let model = args
+            .get(position + 1)
+            .ok_or("--benchmark-image requires a model path")?;
+        let image = args
+            .get(position + 2)
+            .ok_or("--benchmark-image requires an image path")?;
+        let runs = args
+            .get(position + 3)
+            .ok_or("--benchmark-image requires a run count")?
+            .parse::<usize>()?;
+        return inference::benchmark_image(model.as_ref(), image.as_ref(), runs)
+            .map_err(Into::into);
+    }
+    if let Some(position) = args.iter().position(|arg| arg == "--export-onnx") {
+        let model = args
+            .get(position + 1)
+            .ok_or("--export-onnx requires a .pt model path")?;
+        let output = model_export::export(std::path::Path::new(model))?;
+        println!("ONNX exported: {}", output.display());
         return Ok(());
     }
     if args.iter().any(|arg| arg == "--smoke-emulator") {
@@ -76,9 +110,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (sender, receiver) = mpsc::channel();
     let camera_window = ui.as_weak();
+    let worker_sender = sender.clone();
     let camera_thread = std::thread::Builder::new()
         .name("pylon-camera".to_owned())
-        .spawn(move || worker::run(receiver, camera_window))?;
+        .spawn(move || worker::run(receiver, worker_sender, camera_window))?;
 
     let send = sender.clone();
     ui.on_refresh(move || {
@@ -175,6 +210,46 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let send = sender.clone();
     ui.on_reset_image_transform(move || {
         let _ = send.send(worker::Command::ResetImageTransform);
+    });
+    let weak = ui.as_weak();
+    ui.on_pick_pt_model(move || {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("PyTorch model", &["pt"])
+            .pick_file()
+            && let Some(ui) = weak.upgrade()
+        {
+            ui.set_model_pt_path(path.to_string_lossy().into_owned().into());
+        }
+    });
+    let send = sender.clone();
+    ui.on_export_model(move |path| {
+        let _ = send.send(worker::Command::ExportModel(path.to_string().into()));
+    });
+    let send = sender.clone();
+    ui.on_pick_onnx_model(move || {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("ONNX model", &["onnx"])
+            .pick_file()
+        {
+            let _ = send.send(worker::Command::LoadModel(path));
+        }
+    });
+    let send = sender.clone();
+    ui.on_unload_model(move || {
+        let _ = send.send(worker::Command::UnloadModel);
+    });
+    let send = sender.clone();
+    ui.on_select_model_source(move |index| {
+        let _ = send.send(worker::Command::SetModelSource(index));
+    });
+    let send = sender.clone();
+    ui.on_pick_model_image(move || {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("Image", &["bmp", "png", "jpg", "jpeg"])
+            .pick_file()
+        {
+            let _ = send.send(worker::Command::TestModelImage(path));
+        }
     });
     let weak = ui.as_weak();
     ui.on_change_language(move |index| {

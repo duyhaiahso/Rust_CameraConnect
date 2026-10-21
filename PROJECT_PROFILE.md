@@ -22,6 +22,10 @@ This is a new Windows 10/11 x64 desktop test project for connecting to pylon-com
 - Monitor has semantic action-button colors and a camera ROI ratio selector. The selector offers Free plus common fixed ratios, computes the largest exact Width/Height pair from current camera limits and increments, and centers the crop on apply. A locked ratio couples Width and Height edits from both quick settings and the GenICam inspector. ROI dimensions and offsets are written as one recoverable operation after stopping live acquisition. The ratio lock resets on disconnect; ROI values are restored on normal disconnect where possible.
 - The Slint window uses preferred 1120×760 and minimum 800×600 logical sizes. Monitor switches its control panels from a row to a column below 920 px width and scrolls when vertical space is limited. The GenICam detail pane scrolls independently at short heights.
 - Actual FPS is counted from successfully received frames; camera-reported FPS comes from a readable GenICam frame-rate feature when available.
+- An optional, one-class YOLO11 segmentation test runs in a separate Rust ONNX Runtime CPU worker. A one-slot latest-frame queue prevents inference from accumulating camera latency. The monitor shows per-frame object count, processing ms, inference FPS, and a marked last-processed image. This is separate from the camera FPS and does not make product Pass/Fail decisions. A confirmed in-app export action uses an isolated local Python/Ultralytics environment to convert a selected `.pt` checkpoint to dynamic ONNX once; runtime ONNX inference does not require Python. Original and exported model artifacts remain outside Git.
+- AI frame submission is independent of the roughly 15 FPS live-preview cadence. The single pending AI frame is refreshed at most about every 33 ms; the camera worker waits at most 20 ms for the next frame before checking AI events. The application's own image loops use optimized code in the Cargo dev profile.
+- The Model test panel can also open one BMP, PNG, or JPEG image and run it through the already loaded ONNX session without a camera. Image mode pauses AI submissions from live view while leaving camera acquisition running; switching back to Live resumes live inference. Image results display count, processing time, and marked preview without a misleading single-image FPS value.
+- Model test reports both ONNX Runtime `session.run` wall time and total processing wall time per result. Total processing includes preprocessing, output decoding/filtering, and marked preview creation; file reading, queue wait, and Slint display are excluded. Only live mode reports processed-frame FPS.
 - There is no database, authentication, installer, updater, or background service in this test project.
 
 ## Verification boundary
@@ -31,6 +35,7 @@ See [VERIFICATION.md](VERIFICATION.md) for the checks performed on this workstat
 The approved implementation scope is recorded in [docs/plans/0001-basler-camera-test.md](docs/plans/0001-basler-camera-test.md).
 The inspector extension is recorded in [docs/plans/0002-genicam-inspector.md](docs/plans/0002-genicam-inspector.md).
 The application image orientation extension is recorded in [docs/plans/0003-image-orientation.md](docs/plans/0003-image-orientation.md).
+The model test extension is recorded in [docs/plans/0004-onnx-model-test.md](docs/plans/0004-onnx-model-test.md).
 
 ## Implementation constraints
 

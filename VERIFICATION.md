@@ -127,3 +127,40 @@ The ratio selector had been disabled unless Width, Height, OffsetX, and OffsetY 
 The application log showed that pylon accepted a persistent IP command for the selected camera, but the camera was not found at the target address after rescanning. A later Force IP command made it reachable. Basler's installed `Utility_IpConfig` sample restarts the camera IP configuration cycle after a successful broadcast write; this step was missing in the app and has been added for the persistent path. If restarting fails, the app reports that the persistent settings may have been stored and may require a camera power cycle.
 
 `cargo fmt --all`, `cargo build --locked`, `cargo test --locked` (6 passed), and `cargo clippy --locked --all-targets -- -D warnings` passed. The read-only `--list-cameras` command still detected the physical acA1300-60gm. No persistent IP write or camera power-cycle test was performed after this fix, so retention across power cycles remains unverified.
+
+## ONNX model test — 2026-10-20 (UTC+7)
+
+- Inspected the checkpoint archive without unpickling it: Ultralytics 8.3.176, YOLO11 nano segmentation, one `Object` class, training image size 1600.
+- Installed an isolated CPU PyTorch/Ultralytics/ONNX converter environment under LocalAppData. Exported the supplied checkpoint to dynamic ONNX outside Git and validated it with `onnx.checker`.
+- `cargo build --target-dir target\codex-model-test` passed. A normal `cargo build` compiled the sources but could not replace `target\debug\basler-camera-test.exe` while the user's existing app instance held it open; that process was left untouched.
+- PyTorch checkpoint on sample BMP (4) and (6): counts 68 and 71 at confidence 0.25, IoU 0.7, image size 1600.
+- The Rust ONNX CLI on the same samples: counts 68 and 71, with 117 ms and 121 ms total processing time in the debug build. These timings include Rust preprocessing and postprocessing and are single-image observations, not a sustained FPS benchmark.
+- The same Rust export path created a numbered ONNX file when the first ONNX already existed; the numbered model loaded and counted 68 on sample (4). The original checkpoint and first ONNX file were not overwritten.
+- The new Slint component compiled. The live UI, file picker, marked preview, sustained inference FPS, and physical-camera interaction have **not** been visually or interactively checked in this run.
+- The Rust CLI saved a marked copy of sample (4) under ignored `target\codex-model-test\`; visual inspection showed red center markers aligned with the detected row of objects. This checks the annotation helper on a still image, not the Slint image layout.
+- The newly built executable opened in a hidden window, remained running for four seconds, and the agent-started process was stopped. The user's already-running application process was left untouched.
+- A second numbered ONNX file (`V1_21-04-26_0.98-2.onnx`) was generated while checking that export does not overwrite the first one. Automatic cleanup of that external test artifact was blocked by the tool policy; it remains beside the original model.
+- After the final source changes, `cargo fmt`, `cargo build --locked --target-dir target\codex-model-test`, `git diff --check`, and one more Rust ONNX run on sample (4) passed; the last run counted 68 objects.
+
+## In-app single-image model input — 2026-10-20 (UTC+7)
+
+- Added BMP, PNG, and JPEG selection in the Model test panel, using the same loaded ONNX session and inference worker as live view. Image mode blocks new live inference submissions while preserving camera acquisition.
+- `cargo fmt --all` and `cargo build --locked --target-dir target\codex-model-test` passed after the change.
+- The ignored integration test `selected_image_runs_without_a_camera`, run with the external ONNX and sample BMP (4), passed: a missing image returned an error without unloading the model, then the valid image counted 68 objects, produced a nonempty marked preview, and did not report a single-image FPS.
+- The built app launched and exposed a Basler Camera Test window, but the Windows capture helper timed out twice. The file picker and Slint display were not visually verified. The agent-started test process is stopped after this check; the user's app process was not stopped.
+- Follow-up on the reported sample-image error: `Full_L1_V1 (1).bmp` is 0 bytes, while sample (4) is 10,800,054 bytes. The app now reports a localized empty-image message in red and keeps the model loaded. `cargo fmt --all`, `cargo build --locked --target-dir target\codex-model-test`, and the ignored worker test passed; that test rejected the 0-byte BMP, then counted 68 on sample (4). The UI message color/layout still needs a visual check.
+
+## Separate ONNX model-call time — 2026-10-20 (UTC+7)
+
+- Added a second metric around `session.run`, separate from total frame processing time, for live frames and selected images. The panel uses two compact metric rows.
+- `cargo fmt --all`, `cargo build --locked --target-dir target\codex-model-test`, and the ignored external-image worker test passed. The test checks that model time is positive and no greater than total processing time while preserving count 68.
+- One debug CLI run on sample BMP (4) printed count 68, model call 44 ms, total processing 106 ms. This is a single observation, not a throughput benchmark.
+- The updated two-row Slint layout compiled, but the display at 800×600 and the physical-camera live metrics were not visually checked.
+
+## ONNX processing latency and live scheduling — 2026-10-21 (UTC+7)
+
+- Before this change, three debug runs on the 4500×800 BMP (4) took 126–129 ms per complete frame: input preparation about 60 ms, ONNX call 48–52 ms, decoding about 1 ms, annotation about 8 ms, and preview about 8 ms. The release build took about 56–62 ms. These timings include the marked preview and exclude file loading and UI painting.
+- Added a Cargo dev-profile override for this application's image loops. Afterward, three 30-frame dev benchmarks counted 68 objects consistently and measured 56.5–58.5 ms/processed frame, 41.8–43.6 ms in the ONNX call, and 17.0–17.6 FPS synthetic throughput. Two release benchmarks counted 68 and measured 55.1–55.7 ms/processed frame and 17.8–18.0 FPS. Sample BMP (6) still counted 71 in release.
+- Live AI submissions are no longer tied to the roughly 15 FPS UI preview cadence. The camera worker sends an eligible frame to the existing ONNX thread before rendering its preview. A single queued frame is refreshed at most about every 33 ms; pylon wait timeout is 20 ms so AI result events can be handled sooner when the camera is idle.
+- `cargo fmt --all -- --check`, `git diff --check`, the debug and release builds with `--locked --target-dir target\codex-model-test`, and the ignored no-camera image test passed. The test checked count 68, a marked preview, and the separate model/processing timing relationship.
+- The 17–18 FPS figure is a repeated-image CPU benchmark, not measured live FPS. The physical camera, in-app FPS display, and end-to-end camera-to-screen delay were not tested in this change. No additional per-stage inference threads were added because the sequential model call dominates in release and splitting dependent stages would add transfer/wait overhead without measured benefit.

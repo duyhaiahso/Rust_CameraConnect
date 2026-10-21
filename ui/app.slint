@@ -5,6 +5,7 @@ import { ImageOrientation } from "image_orientation.slint";
 import { QuickEditor } from "quick_editor.slint";
 import { ActionButton } from "action_button.slint";
 import { IpSettingsDialog } from "ip_settings.slint";
+import { ModelPanel } from "model_panel.slint";
 
 export component AppWindow inherits Window {
     title: "Basler Camera Test";
@@ -50,6 +51,22 @@ export component AppWindow inherits Window {
     in-out property <string> device-info: "";
     in-out property <string> actual-fps: "—";
     in-out property <string> configured-fps: "—";
+    in-out property <string> model-pt-path: "";
+    in-out property <string> model-path: "";
+    in-out property <string> model-image-path: "";
+    in-out property <int> model-source-index: 0;
+    in-out property <string> model-status: "";
+    in-out property <bool> model-ready: false;
+    in-out property <bool> model-busy: false;
+    in-out property <bool> model-error: false;
+    in-out property <bool> model-has-result: false;
+    in-out property <int> model-count: 0;
+    in-out property <string> model-run-ms: "—";
+    in-out property <string> model-processing-ms: "—";
+    in-out property <string> model-processed-fps: "—";
+    in-out property <string> model-age-ms: "—";
+    in-out property <image> model-preview;
+    private property <bool> confirm-model-export: false;
     in-out property <[FeatureRow]> feature-rows: [];
     in-out property <[QuickFeatureRow]> quick-features: [];
     in-out property <bool> rotate-available: false;
@@ -104,6 +121,12 @@ export component AppWindow inherits Window {
     callback toggle-image-horizontal();
     callback toggle-image-vertical();
     callback reset-image-transform();
+    callback pick-pt-model();
+    callback export-model(string);
+    callback pick-onnx-model();
+    callback unload-model();
+    callback select-model-source(int);
+    callback pick-model-image();
 
     VerticalLayout {
         padding: 14px;
@@ -261,7 +284,7 @@ export component AppWindow inherits Window {
                 width: parent.width;
                 height: parent.height;
                 horizontal-scrollbar-policy: always-off;
-                content-height: Math.max(self.visible-height, root.width < 920px ? 695px : 525px);
+                content-height: Math.max(self.visible-height, root.width < 920px ? 955px : 775px);
 
             VerticalLayout {
                 width: monitor-scroll.visible-width;
@@ -324,6 +347,24 @@ export component AppWindow inherits Window {
                                 vertical-alignment: center;
                             }
                         }
+                        if root.model-has-result && root.model-source-index == 0 : Rectangle {
+                            x: parent.width - 154px;
+                            y: 12px;
+                            width: 142px;
+                            height: 30px;
+                            background: #087e8b;
+                            border-radius: 4px;
+                            Text {
+                                width: parent.width;
+                                height: parent.height;
+                                text: "AI  " + root.model-count + "  ·  " + root.model-processed-fps + " FPS";
+                                color: #ffffff;
+                                font-size: 12px;
+                                font-weight: 700;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
                     }
                 }
             }
@@ -375,6 +416,31 @@ export component AppWindow inherits Window {
                     toggle-vertical => { root.toggle-image-vertical(); }
                     reset-image => { root.reset-image-transform(); }
                 }
+            }
+            ModelPanel {
+                height: 220px;
+                language-index: root.language-index;
+                pt-path: root.model-pt-path;
+                onnx-path: root.model-path;
+                image-path: root.model-image-path;
+                source-index: root.model-source-index;
+                status: root.model-status;
+                ready: root.model-ready;
+                busy: root.model-busy;
+                error: root.model-error;
+                has-result: root.model-has-result;
+                count: root.model-count;
+                model-ms: root.model-run-ms;
+                processing-ms: root.model-processing-ms;
+                processed-fps: root.model-processed-fps;
+                age-ms: root.model-age-ms;
+                result-image: root.model-preview;
+                pick-pt => { root.pick-pt-model(); }
+                export-model(path) => { root.confirm-model-export = true; }
+                pick-onnx => { root.pick-onnx-model(); }
+                unload-model => { root.unload-model(); }
+                select-source(index) => { root.select-model-source(index); }
+                pick-image => { root.pick-model-image(); }
             }
             }
             }
@@ -544,6 +610,55 @@ export component AppWindow inherits Window {
         apply-feature(value) => { root.busy = true; root.apply-feature(value); }
         preview-roi-value(value) => { root.preview-roi-value(value); }
         close-editor => { root.quick-editor-open = false; }
+    }
+
+    if root.confirm-model-export : Rectangle {
+        width: parent.width;
+        height: parent.height;
+        background: #111a2799;
+        TouchArea { width: parent.width; height: parent.height; }
+        Rectangle {
+            width: Math.min(430px, parent.width - 36px);
+            height: 155px;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            background: #ffffff;
+            border-radius: 8px;
+            VerticalLayout {
+                width: parent.width;
+                height: parent.height;
+                padding: 18px;
+                spacing: 12px;
+                Text {
+                    text: root.language-index == 1 ? "Xuất model sang ONNX?" : "Export model to ONNX?";
+                    color: #172334;
+                    font-size: 16px;
+                    font-weight: 700;
+                }
+                Text {
+                    text: root.model-pt-path;
+                    color: #53677f;
+                    font-size: 11px;
+                    overflow: elide;
+                    vertical-stretch: 1;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Button {
+                        text: root.language-index == 1 ? "Hủy" : "Cancel";
+                        clicked => { root.confirm-model-export = false; }
+                    }
+                    ActionButton {
+                        text: root.language-index == 1 ? "Xuất ONNX" : "Export ONNX";
+                        tone: 3;
+                        clicked => {
+                            root.confirm-model-export = false;
+                            root.export-model(root.model-pt-path);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     if root.confirm-roi : Rectangle {

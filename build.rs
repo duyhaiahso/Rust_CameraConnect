@@ -9,6 +9,7 @@ fn main() {
     println!("cargo:rerun-if-changed=ui/quick_editor.slint");
     println!("cargo:rerun-if-changed=ui/action_button.slint");
     println!("cargo:rerun-if-changed=ui/ip_settings.slint");
+    println!("cargo:rerun-if-changed=ui/model_panel.slint");
     println!("cargo:rerun-if-env-changed=PYLON_ROOT");
     slint_build::compile("ui/app.slint").expect("Unable to compile Slint UI");
 

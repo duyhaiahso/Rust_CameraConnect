@@ -66,6 +66,36 @@ The camera emulator ROI transaction check is `cargo run -- --roundtrip-roi-emula
 
 The file log contains application camera operations and errors. It does not collect every internal pylon driver trace. Times shown in the UI, capture names, and log entries use UTC+7.
 
+## Test a YOLO11 segmentation model
+
+The **Model test** panel below the live view counts the `Object` instances detected in **one processed frame**. **Model (ms)** measures only the ONNX Runtime `session.run` call, from invocation until it returns the output. **Total processing (ms)** also includes input preparation, result decoding/filtering, annotation, and preview creation; neither value includes waiting for a frame or painting the UI. The panel also shows processed-frame FPS during live inference and the last processed frame with a red center marker for each detection. These values are separate from the camera FPS shown over the live image. There is no running total, product target, or Pass/Fail decision.
+
+The supplied `.pt` checkpoint is exported once to ONNX. On this workstation, the converter environment has been installed at `%LOCALAPPDATA%\BaslerCameraTest\model-converter\`. On another workstation, install Python 3.11 x64 and run:
+
+```powershell
+.\tools\setup_model_converter.ps1 -PythonExe 'C:\path\to\python.exe'
+```
+
+In the app, choose a `.pt` file and press **Export ONNX**, confirm the action, then start live view. The exporter creates a new `.onnx` beside the original checkpoint and loads it automatically. If an ONNX file of that name already exists, the exporter chooses a numbered filename; it does not overwrite the original `.pt` or the existing ONNX file. **Open ONNX** loads an already exported model without Python. **Stop AI** unloads it. The app supports this checkpoint's one-class YOLO11 segmentation output; an incompatible ONNX model shows an error. Model files and sample images are outside the Git repository and are ignored by Git.
+
+To test a saved image, load ONNX and press **Choose image...** in the Model test panel. Select one BMP, PNG, or JPEG image. The app shows its object count, processing time, and marked preview without requiring a camera connection. The image result remains visible while camera live view continues; AI stops receiving live frames until **Live** is selected again. Switching back to **Image** reruns the last chosen image. In image mode, inference FPS and camera-frame latency do not apply.
+
+An empty or unreadable image shows a short error in the panel and leaves the ONNX model loaded. Replace a 0-byte file with a valid image; the app cannot recover image data from an empty file.
+
+The ONNX export uses dynamic image shapes. Inference letterboxes each RGB camera frame to a stride-aligned shape within 1600 pixels, uses confidence 0.25 and NMS IoU 0.7, and counts up to 300 objects. The model worker keeps only the newest waiting frame, so camera acquisition is not held back by inference. Only CPU execution has been configured on this test workstation; the actual speed depends on image size and machine load. The model was trained for wide images, so counts on a camera with a different field of view need to be checked with representative images.
+
+For a read-only image check without opening the UI:
+
+```powershell
+cargo run -- --infer-image 'C:\path\to\model.onnx' 'C:\path\to\sample.bmp'
+```
+
+The diagnostic `--export-onnx 'C:\path\to\model.pt'` invokes the same exporter as the UI. It needs the converter environment above. For speed measurements, prefer a release build (`cargo run --release`) after the model works in the debug build.
+
+To measure repeated processing of one saved image, run `cargo run -- --benchmark-image '<model.onnx>' '<sample.bmp>' 30`. The command loads and warms the model once, then reports average ONNX call time, complete processing time, and maximum single-worker throughput. It does not include camera acquisition, pylon RGB conversion, file loading, or UI painting. Ordinary `cargo run` now optimizes this application's image-processing code even in the dev profile; use a release build for final performance measurements.
+
+In live mode, camera acquisition and ONNX inference run on separate threads. The live preview is updated at about 15 FPS, while AI can accept newer frames independently, subject to its processing speed and the camera's actual frame rate. A single waiting AI frame is refreshed at most about every 33 ms to keep results current without accumulating a queue. The pylon wait timeout is 20 ms, after which the camera worker can handle pending AI result events. Displayed AI FPS is measured from completed results; it may be below benchmark throughput when the camera is slower or the workstation is busy.
+
 ## Scope and limitations
 
 - One 2D image-stream camera at a time. USB3, GigE, and other pylon transports depend on the installed drivers and hardware.
