@@ -164,3 +164,43 @@ The application log showed that pylon accepted a persistent IP command for the s
 - Live AI submissions are no longer tied to the roughly 15 FPS UI preview cadence. The camera worker sends an eligible frame to the existing ONNX thread before rendering its preview. A single queued frame is refreshed at most about every 33 ms; pylon wait timeout is 20 ms so AI result events can be handled sooner when the camera is idle.
 - `cargo fmt --all -- --check`, `git diff --check`, the debug and release builds with `--locked --target-dir target\codex-model-test`, and the ignored no-camera image test passed. The test checked count 68, a marked preview, and the separate model/processing timing relationship.
 - The 17–18 FPS figure is a repeated-image CPU benchmark, not measured live FPS. The physical camera, in-app FPS display, and end-to-end camera-to-screen delay were not tested in this change. No additional per-stage inference threads were added because the sequential model call dominates in release and splitting dependent stages would add transfer/wait overhead without measured benefit.
+
+## Continuous image and folder detection — 2026-10-22 (UTC+7)
+
+- The Model test panel can run one cached image repeatedly or cycle through supported images in a selected folder until stopped. Each result retains its filename, per-image count, marked preview, model/processing milliseconds, completed-image FPS, and number of processed images. One-shot image testing remains available.
+- The ignored ONNX integration tests passed using the supplied external model and BMP samples. The single-image loop returned three consecutive counts of 68 with increasing processed-image numbers. The folder loop skipped the 0-byte BMP, returned valid results, and switched back to one-shot inference with count 68. A temporary folder containing only a 0-byte BMP stopped with an error; the test removed its own temporary folder.
+- `cargo fmt --all -- --check`, `git diff --check`, and `cargo build --locked --target-dir target\codex-model-test` passed. The Slint component and Rust callbacks compiled.
+- Folder picker interaction, panel appearance at 800×600, sustained UI updates, and operation with a physical camera were not visually or interactively checked. No sample/model artifacts were added to Git.
+
+## Full-width model result and detail zoom — 2026-10-22 (UTC+7)
+
+- `cargo build --locked` passed with the responsive result row and detail overlay.
+- The 4500×800 sample BMP (4) ran through the ONNX CLI with count 68; the saved 4500×800 marked image was visually inspected and shows markers across the original wide frame. Its normal preview is 900×160.
+- The detail overlay receives the exact result currently displayed in Slint, including application rotation/flip, and keeps its own image while later results update. Full-resolution pixel transfer happens only when opening detail.
+- The new UI was compiled but zoom/pan interaction, the 800×600 appearance, and physical camera operation were not interactively checked. The marked test image was written to the user's temporary folder for inspection, then removed; no sample/model artifacts were added to Git.
+
+## Model-derived ONNX input size — 2026-10-22 (UTC+7)
+
+- The cigarette ONNX metadata specifies `imgsz=[704,704]`; the ductile-iron ONNX metadata specifies `[1600,1600]`. The app now uses this metadata by default, reads a fixed ONNX input shape when present, and retains 1600×1600 only when neither source supplies a usable size. Dynamic models permit a session-only override from 64 to 2048 pixels per side in multiples of 32.
+- On repeated 752×647 cigarette image tests, the 704 input counted 20 on `TL01_OK_095134.png` and 19 on `TL01_NG_095134.png`, at 20.0 and 20.3 processed images/s. An explicit 1600 override counted 26 and 16, at 3.8 and 3.7 images/s. These are synthetic CPU benchmarks that exclude disk, camera, and UI time; the changed counts require comparison with labeled ground truth before choosing a production size.
+- The ductile-iron BMP sample still counted 68 using its metadata default of 1600. The ignored continuous-image integration test passed after switching input size during a loop and restoring 1600; it also checked the one-shot result after the loop.
+- `cargo test --locked` passed 7 ordinary tests; the targeted ignored loop test passed separately. The final `cargo build --locked`, `cargo fmt --check`, and `git diff --check` passed. The live UI, physical camera, and visually displayed size controls were not interactively checked.
+
+## Flexible live viewer — 2026-10-22 (UTC+7)
+
+- The live card now derives its height from the displayed preview's width/height, with a minimum and a cap based on window height. Monitor scrolls to keep the camera controls and Model panel reachable. A larger overlay reuses the updating preview, keeps the live FPS badge visible, and provides Fit, 100%, 200%, and drag-to-pan.
+- `cargo fmt --check` and `git diff --check` passed. The default `cargo build --locked` compiled the code but could not replace the existing `target\debug\basler-camera-test.exe` because Windows denied removal of that file. `cargo build --locked --target-dir target\codex-model-test` completed successfully instead.
+- Layout at 800×600, viewer interactions, and physical-camera streaming were not visually or interactively checked. The larger viewer uses the existing reduced preview, so zooming does not add sensor-resolution detail.
+
+## Detection bounding boxes — 2026-10-22 (UTC+7)
+
+- Replaced each red center dot with a red rectangular border derived from the same decoded bounding box used by NMS. Borders are clipped to image bounds and sized to remain visible after preview reduction. Live AI, single-image, folder-loop, CLI output, and the frozen detail image share this annotation path; inference and count logic were unchanged.
+- `cargo fmt --check` and `cargo build --locked --target-dir target\codex-model-test` passed. The supplied 4500×800 ductile-iron BMP (4) still counted 68 objects. The CLI saved an annotated BMP under ignored `target\codex-model-test\`; visual inspection showed individual red rectangles along the detected row. Annotation took about 2 ms in that single debug run, which is not a sustained performance measurement.
+- The Slint result panel and physical-camera live mode were not interactively checked. The sample verifies the shared annotation output on one still image, not detection accuracy against ground truth.
+- After the color correction, the borders are green (`#24DC50`). `cargo build --locked --target-dir target\codex-model-test` passed again; BMP (4) still counted 68, and the regenerated sample under ignored `target\codex-model-test\` was visually checked with green boxes.
+
+## Switchable detection marks — 2026-10-22 (UTC+7)
+
+- The Model result row now offers Red dot and Green box, defaulting to Green box. Both styles draw from the same decoded detections, so the selection changes only the annotated output. The preference is held for the application session. Switching clears the previous result; a selected one-shot image is processed again, while live and image loops use the new style on subsequent results.
+- A synthetic annotation test passed for the two expected RGB colors and positions without changing the source frame. The ignored integration test using the supplied gang-cau ONNX and BMP (4) passed while switching Box → Dot → Box during a continuous image loop; each style still counted 68, and its full-resolution result contained the selected color. The final `cargo build --locked --target-dir target\codex-model-test`, `cargo test --locked --target-dir target\codex-model-test` (8 passed, 2 ignored), `cargo fmt --check`, and `git diff --check` passed.
+- The model result controls were compiled but not visually tested at 800×600 or with physical-camera streaming. The test establishes annotation switching and count stability on this sample, not ground-truth detection accuracy.

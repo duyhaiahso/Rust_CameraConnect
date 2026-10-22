@@ -3,7 +3,8 @@ use crate::clock::Timestamp;
 use crate::files::{self, Logger};
 use crate::genicam::{self, FeatureDetail, FeatureKey, FeatureTree, MapKind};
 use crate::inference::{
-    self, Event as InferenceEvent, Runner as InferenceRunner, Source as ModelSource,
+    self, AnnotationMode, Event as InferenceEvent, InputSize, LoopInput, Runner as InferenceRunner,
+    SizeSource, Source as ModelSource,
 };
 use crate::model_export;
 use crate::network::IpSettings;
@@ -13,9 +14,9 @@ use crate::{AppWindow, FeatureRow, QuickFeatureRow};
 use slint::{Model, Rgb8Pixel, SharedPixelBuffer, SharedString, Weak};
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 pub enum Command {
@@ -52,6 +53,14 @@ pub enum Command {
     UnloadModel,
     SetModelSource(i32),
     TestModelImage(PathBuf),
+    SelectModelFolder(PathBuf),
+    StartModelLoop,
+    StopModelLoop,
+    SetModelInputSize(String),
+    ResetModelInputSize,
+    SetAnnotationMode(i32),
+    OpenModelDetail,
+    CloseModelDetail,
     InferenceEvent(InferenceEvent),
     Shutdown,
 }
@@ -61,6 +70,7 @@ struct UiSink {
     preview_queued: Arc<AtomicBool>,
     model_preview_queued: Arc<AtomicBool>,
     model_result_revision: Arc<AtomicU64>,
+    displayed_model_frame: Arc<Mutex<Option<(Arc<Frame>, ImageTransform)>>>,
 }
 
 impl UiSink {
@@ -70,6 +80,7 @@ impl UiSink {
             preview_queued: Arc::new(AtomicBool::new(false)),
             model_preview_queued: Arc::new(AtomicBool::new(false)),
             model_result_revision: Arc::new(AtomicU64::new(0)),
+            displayed_model_frame: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -172,6 +183,8 @@ impl UiSink {
             return;
         }
         let pixels = display_pixels(frame, transform);
+        let preview_width = pixels.width() as i32;
+        let preview_height = pixels.height() as i32;
         let flag = Arc::clone(&self.preview_queued);
         if self
             .window
@@ -182,6 +195,8 @@ impl UiSink {
                     ui.set_has_snapshot(true);
                 } else {
                     ui.set_preview(image);
+                    ui.set_preview_width(preview_width);
+                    ui.set_preview_height(preview_height);
                     ui.set_has_preview(true);
                     flag.store(false, Ordering::Release);
                 }
@@ -212,7 +227,10 @@ impl UiSink {
     fn clear_preview(&self) {
         let _ = self.window.upgrade_in_event_loop(|ui| {
             ui.set_preview(slint::Image::default());
+            ui.set_preview_width(4);
+            ui.set_preview_height(3);
             ui.set_has_preview(false);
+            ui.set_live_detail_open(false);
         });
     }
 
@@ -359,17 +377,108 @@ impl UiSink {
         });
     }
 
+    fn model_size(&self, active: InputSize, default: InputSize, source: SizeSource) {
+        let _ = self.window.upgrade_in_event_loop(move |ui| {
+            ui.set_model_input_size(active.label().into());
+            ui.set_model_default_size(default.label().into());
+            ui.set_model_size_draft(active.label().into());
+            ui.set_model_size_source(match source {
+                SizeSource::Fallback => 0,
+                SizeSource::Metadata => 1,
+                SizeSource::Fixed => 2,
+            });
+            ui.set_model_size_error("".into());
+            ui.set_model_busy(false);
+        });
+    }
+
+    fn model_size_reset(&self) {
+        let _ = self.window.upgrade_in_event_loop(|ui| {
+            ui.set_model_input_size("".into());
+            ui.set_model_default_size("".into());
+            ui.set_model_size_draft("".into());
+            ui.set_model_size_source(0);
+            ui.set_model_size_error("".into());
+        });
+    }
+
+    fn annotation_mode(&self, mode: AnnotationMode) {
+        let _ = self.window.upgrade_in_event_loop(move |ui| {
+            ui.set_model_annotation_mode(if mode == AnnotationMode::Box { 1 } else { 0 });
+            ui.set_model_busy(false);
+        });
+    }
+
+    fn model_size_error(&self, english: &'static str, vietnamese: &'static str) {
+        let _ = self.window.upgrade_in_event_loop(move |ui| {
+            ui.set_model_busy(false);
+            ui.set_model_size_error(if ui.get_language_index() == 1 {
+                vietnamese.into()
+            } else {
+                english.into()
+            });
+        });
+    }
+
     fn model_clear_result(&self) {
         self.model_result_revision.fetch_add(1, Ordering::AcqRel);
-        let _ = self.window.upgrade_in_event_loop(|ui| {
+        let displayed_frame = Arc::clone(&self.displayed_model_frame);
+        let _ = self.window.upgrade_in_event_loop(move |ui| {
+            if let Ok(mut frame) = displayed_frame.lock() {
+                *frame = None;
+            }
             ui.set_model_has_result(false);
             ui.set_model_count(0);
             ui.set_model_run_ms("—".into());
             ui.set_model_processing_ms("—".into());
             ui.set_model_processed_fps("—".into());
             ui.set_model_age_ms("—".into());
+            ui.set_model_processed_images(0);
             ui.set_model_preview(slint::Image::default());
+            ui.set_model_result_aspect(0.32);
+            ui.set_model_detail_open(false);
+            ui.set_model_detail_image(slint::Image::default());
         });
+    }
+
+    fn open_model_detail(&self) {
+        let displayed = self
+            .displayed_model_frame
+            .lock()
+            .ok()
+            .and_then(|slot| slot.clone());
+        let Some((frame, transform)) = displayed else {
+            return;
+        };
+        let (width, height) = transform.dimensions(frame.width, frame.height);
+        let pixels = if transform.is_identity() {
+            SharedPixelBuffer::<Rgb8Pixel>::clone_from_slice(&frame.rgb, width, height)
+        } else {
+            let transformed = transform.apply(&frame);
+            SharedPixelBuffer::<Rgb8Pixel>::clone_from_slice(&transformed.rgb, width, height)
+        };
+        let _ = self.window.upgrade_in_event_loop(move |ui| {
+            if !ui.get_model_has_result() {
+                return;
+            }
+            ui.set_model_detail_width(width as i32);
+            ui.set_model_detail_height(height as i32);
+            ui.set_model_detail_image(slint::Image::from_rgb8(pixels));
+            ui.set_model_detail_open(true);
+        });
+    }
+
+    fn close_model_detail(&self) {
+        let _ = self.window.upgrade_in_event_loop(|ui| {
+            ui.set_model_detail_open(false);
+            ui.set_model_detail_image(slint::Image::default());
+        });
+    }
+
+    fn model_looping(&self, looping: bool) {
+        let _ = self
+            .window
+            .upgrade_in_event_loop(move |ui| ui.set_model_looping(looping));
     }
 
     fn model_source(&self, source: ModelSource, path: String) {
@@ -387,7 +496,8 @@ impl UiSink {
 
     fn model_result(&self, result: inference::ResultFrame) {
         let is_live = result.source == ModelSource::Live;
-        if is_live && self.model_preview_queued.swap(true, Ordering::AcqRel) {
+        let coalesce = is_live || result.continuous;
+        if coalesce && self.model_preview_queued.swap(true, Ordering::AcqRel) {
             return;
         }
         let revision = self.model_result_revision.load(Ordering::Acquire);
@@ -398,6 +508,10 @@ impl UiSink {
             result.preview.width,
             result.preview.height,
         );
+        let aspect = result.preview.height as f32 / result.preview.width as f32;
+        let detail_frame = result.detail_frame;
+        let transform = result.transform;
+        let displayed_frame = Arc::clone(&self.displayed_model_frame);
         let count = result.count as i32;
         let model_ms = format!("{:.0}", result.model_ms);
         let processing = format!("{:.0}", result.processing_ms);
@@ -409,6 +523,8 @@ impl UiSink {
             .age_ms
             .map(|value| value.to_string())
             .unwrap_or_default();
+        let image_path = result.image_path.map(|path| path.display().to_string());
+        let processed_images = result.processed_images.min(i32::MAX as u64) as i32;
         let queued = Arc::clone(&self.model_preview_queued);
         if self
             .window
@@ -416,7 +532,7 @@ impl UiSink {
                 if current_revision.load(Ordering::Acquire) != revision
                     || ui.get_model_source_index() != source_index
                 {
-                    if is_live {
+                    if coalesce {
                         queued.store(false, Ordering::Release);
                     }
                     return;
@@ -426,15 +542,23 @@ impl UiSink {
                 ui.set_model_processing_ms(processing.into());
                 ui.set_model_processed_fps(fps.into());
                 ui.set_model_age_ms(age.into());
+                ui.set_model_processed_images(processed_images);
+                if let Some(path) = image_path {
+                    ui.set_model_image_path(path.into());
+                }
                 ui.set_model_preview(slint::Image::from_rgb8(pixels));
+                ui.set_model_result_aspect(aspect);
+                if let Ok(mut frame) = displayed_frame.lock() {
+                    *frame = Some((detail_frame, transform));
+                }
                 ui.set_model_has_result(true);
-                if is_live {
+                if coalesce {
                     queued.store(false, Ordering::Release);
                 }
             })
             .is_err()
         {
-            if is_live {
+            if coalesce {
                 self.model_preview_queued.store(false, Ordering::Release);
             }
         }
@@ -503,8 +627,13 @@ struct Worker {
     model_generation: u64,
     live_epoch: u64,
     model_ready: bool,
+    model_input_size: InputSize,
+    model_default_size: InputSize,
+    model_size_source: SizeSource,
+    annotation_mode: AnnotationMode,
     model_source: ModelSource,
-    model_image_path: Option<PathBuf>,
+    model_input: Option<LoopInput>,
+    model_looping: bool,
     exporting_model: bool,
     logger: Option<Logger>,
     runtime: Option<Runtime>,
@@ -553,8 +682,19 @@ impl Worker {
             model_generation: 0,
             live_epoch: 0,
             model_ready: false,
+            model_input_size: InputSize {
+                width: 1600,
+                height: 1600,
+            },
+            model_default_size: InputSize {
+                width: 1600,
+                height: 1600,
+            },
+            model_size_source: SizeSource::Fallback,
+            annotation_mode: AnnotationMode::Box,
             model_source: ModelSource::Live,
-            model_image_path: None,
+            model_input: None,
+            model_looping: false,
             exporting_model: false,
             logger: logger.ok(),
             runtime: None,
@@ -1318,6 +1458,33 @@ impl Worker {
         }
     }
 
+    fn apply_model_input_size(&mut self, size: InputSize) {
+        if self.model_size_source == SizeSource::Fixed {
+            self.ui.model_size_error(
+                "This ONNX model has a fixed input size",
+                "Model ONNX này có kích thước đầu vào cố định",
+            );
+            return;
+        }
+        if size == self.model_input_size {
+            self.ui
+                .model_size(size, self.model_default_size, self.model_size_source);
+            return;
+        }
+        let Some(inference) = &self.inference else {
+            return;
+        };
+        self.live_epoch = inference.set_input_size(size);
+        self.ui.model_clear_result();
+        self.ui.model_status(
+            true,
+            true,
+            "Applying inference size…".to_owned(),
+            "Đang áp dụng kích thước AI…".to_owned(),
+            String::new(),
+        );
+    }
+
     fn handle(&mut self, command: Command) {
         match command {
             Command::Refresh => self.refresh(),
@@ -1596,11 +1763,14 @@ impl Worker {
                 }
                 self.exporting_model = true;
                 self.model_ready = false;
+                self.model_looping = false;
+                self.ui.model_looping(false);
                 if let Some(inference) = &self.inference {
                     self.model_generation = inference.unload();
                 }
                 self.ui.model_clear_result();
                 self.ui.model_clear_path();
+                self.ui.model_size_reset();
                 self.ui.model_status(
                     false,
                     true,
@@ -1638,7 +1808,10 @@ impl Worker {
             }
             Command::LoadModel(path) => {
                 self.model_ready = false;
+                self.model_looping = false;
+                self.ui.model_looping(false);
                 self.ui.model_clear_result();
+                self.ui.model_size_reset();
                 self.ui.model_status(
                     false,
                     true,
@@ -1660,8 +1833,11 @@ impl Worker {
             }
             Command::UnloadModel => {
                 self.model_ready = false;
+                self.model_looping = false;
+                self.ui.model_looping(false);
                 self.ui.model_clear_result();
                 self.ui.model_clear_path();
+                self.ui.model_size_reset();
                 self.ui.model_status(
                     false,
                     false,
@@ -1682,27 +1858,48 @@ impl Worker {
                 if self.model_source == source {
                     return;
                 }
+                let was_looping = self.model_looping;
+                self.model_looping = false;
+                self.ui.model_looping(false);
                 self.model_source = source;
                 if let Some(inference) = &self.inference {
-                    self.live_epoch = inference.clear_frames();
+                    self.live_epoch = if was_looping {
+                        inference.stop_loop()
+                    } else {
+                        inference.clear_frames()
+                    };
                 }
                 self.ui.model_clear_result();
                 self.ui.model_source(
                     source,
-                    self.model_image_path
+                    self.model_input
                         .as_ref()
-                        .map(|path| path.display().to_string())
+                        .map(|input| input.path().display().to_string())
                         .unwrap_or_default(),
                 );
                 if source == ModelSource::Image {
-                    if let Some(path) = self.model_image_path.clone().filter(|_| self.model_ready) {
+                    if let Some(LoopInput::Image(path)) =
+                        self.model_input.clone().filter(|_| self.model_ready)
+                    {
                         self.handle(Command::TestModelImage(path));
                     } else if self.model_ready {
+                        let folder_selected =
+                            matches!(self.model_input.as_ref(), Some(LoopInput::Folder(_)));
                         self.ui.model_status(
                             true,
                             false,
-                            "Choose an image to test".to_owned(),
-                            "Chọn ảnh để thử model".to_owned(),
+                            if folder_selected {
+                                "Folder selected; start loop"
+                            } else {
+                                "Choose an image to test"
+                            }
+                            .to_owned(),
+                            if folder_selected {
+                                "Đã chọn thư mục; bấm Chạy lặp"
+                            } else {
+                                "Chọn ảnh để thử model"
+                            }
+                            .to_owned(),
                             String::new(),
                         );
                     }
@@ -1738,7 +1935,9 @@ impl Worker {
                     return;
                 }
                 self.model_source = ModelSource::Image;
-                self.model_image_path = Some(path.clone());
+                self.model_input = Some(LoopInput::Image(path.clone()));
+                self.model_looping = false;
+                self.ui.model_looping(false);
                 self.ui
                     .model_source(ModelSource::Image, path.display().to_string());
                 self.ui.model_clear_result();
@@ -1753,11 +1952,147 @@ impl Worker {
                     self.live_epoch = inference.test_image(path);
                 }
             }
+            Command::SelectModelFolder(path) => {
+                if !self.model_ready {
+                    return;
+                }
+                if !path.is_dir() {
+                    self.ui.model_image_error(
+                        "Selected folder is unavailable",
+                        "Không mở được thư mục đã chọn",
+                    );
+                    return;
+                }
+                self.model_source = ModelSource::Image;
+                self.model_input = Some(LoopInput::Folder(path.clone()));
+                self.model_looping = false;
+                self.ui.model_looping(false);
+                if let Some(inference) = &self.inference {
+                    self.live_epoch = inference.stop_loop();
+                }
+                self.ui.model_clear_result();
+                self.ui
+                    .model_source(ModelSource::Image, path.display().to_string());
+                self.ui.model_status(
+                    true,
+                    false,
+                    "Folder selected; start loop".to_owned(),
+                    "Đã chọn thư mục; bấm Chạy lặp".to_owned(),
+                    String::new(),
+                );
+            }
+            Command::StartModelLoop => {
+                let Some(input) = self.model_input.clone().filter(|_| self.model_ready) else {
+                    return;
+                };
+                if self.model_looping {
+                    return;
+                }
+                self.model_source = ModelSource::Image;
+                self.model_looping = true;
+                self.ui.model_looping(true);
+                self.ui
+                    .model_source(ModelSource::Image, input.path().display().to_string());
+                self.ui.model_clear_result();
+                self.ui.model_status(
+                    true,
+                    false,
+                    "Image loop running".to_owned(),
+                    "Đang detect ảnh liên tục".to_owned(),
+                    String::new(),
+                );
+                if let Some(inference) = &self.inference {
+                    self.live_epoch = inference.start_loop(input);
+                }
+            }
+            Command::StopModelLoop => {
+                if !self.model_looping {
+                    return;
+                }
+                self.model_looping = false;
+                self.ui.model_looping(false);
+                if let Some(inference) = &self.inference {
+                    self.live_epoch = inference.stop_loop();
+                }
+                self.ui.model_status(
+                    true,
+                    false,
+                    "Image loop stopped".to_owned(),
+                    "Đã dừng detect liên tục".to_owned(),
+                    String::new(),
+                );
+            }
+            Command::SetModelInputSize(value) => {
+                if !self.model_ready {
+                    return;
+                }
+                let Some(size) = InputSize::from_user(&value) else {
+                    self.ui.model_size_error(
+                        "Multiple of 32, 64–2048 (e.g. 704)",
+                        "Bội số 32, từ 64–2048 (vd: 704)",
+                    );
+                    return;
+                };
+                self.apply_model_input_size(size);
+            }
+            Command::ResetModelInputSize => {
+                if self.model_ready {
+                    self.apply_model_input_size(self.model_default_size);
+                }
+            }
+            Command::SetAnnotationMode(index) => {
+                if !self.model_ready {
+                    self.ui.annotation_mode(self.annotation_mode);
+                    return;
+                }
+                let mode = match index {
+                    0 => AnnotationMode::Dot,
+                    1 => AnnotationMode::Box,
+                    _ => {
+                        self.ui.annotation_mode(self.annotation_mode);
+                        return;
+                    }
+                };
+                if mode == self.annotation_mode {
+                    self.ui.annotation_mode(mode);
+                    return;
+                }
+                let Some(inference) = &self.inference else {
+                    return;
+                };
+                self.live_epoch = inference.set_annotation_mode(mode);
+                self.ui.model_clear_result();
+                self.ui.model_status(
+                    true,
+                    true,
+                    "Changing result display…".to_owned(),
+                    "Đang đổi kiểu hiển thị…".to_owned(),
+                    String::new(),
+                );
+            }
+            Command::OpenModelDetail => self.ui.open_model_detail(),
+            Command::CloseModelDetail => self.ui.close_model_detail(),
             Command::InferenceEvent(event) => match event {
-                InferenceEvent::Loaded(generation, path) => {
+                InferenceEvent::Loaded(generation, path, model_input) => {
                     if generation == self.model_generation {
                         self.model_ready = true;
+                        self.model_input_size = model_input.active;
+                        self.model_default_size = model_input.default;
+                        self.model_size_source = model_input.source;
+                        self.ui.model_size(
+                            model_input.active,
+                            model_input.default,
+                            model_input.source,
+                        );
                         self.log("INFO", format!("ONNX model loaded: {}", path.display()));
+                        self.log(
+                            "INFO",
+                            format!(
+                                "ONNX inference input: {} ({:?})",
+                                model_input.active.label(),
+                                model_input.source
+                            ),
+                        );
                         let (english, vietnamese) = if self.model_source == ModelSource::Image {
                             ("Model ready; choose an image", "Model sẵn sàng; chọn ảnh")
                         } else if self.stream.is_some() {
@@ -1777,6 +2112,81 @@ impl Worker {
                         );
                     }
                 }
+                InferenceEvent::SizeChanged(generation, epoch, size) => {
+                    if generation == self.model_generation && epoch == self.live_epoch {
+                        self.model_input_size = size;
+                        self.ui
+                            .model_size(size, self.model_default_size, self.model_size_source);
+                        self.log(
+                            "INFO",
+                            format!("ONNX inference input changed to {}", size.label()),
+                        );
+                        if self.model_source == ModelSource::Image && !self.model_looping {
+                            if let Some(LoopInput::Image(path)) = self.model_input.clone() {
+                                self.handle(Command::TestModelImage(path));
+                            }
+                        } else if self.model_looping {
+                            self.ui.model_status(
+                                true,
+                                false,
+                                "Image loop running".to_owned(),
+                                "Đang detect ảnh liên tục".to_owned(),
+                                String::new(),
+                            );
+                        } else {
+                            let running = self.stream.is_some();
+                            self.ui.model_status(
+                                true,
+                                false,
+                                if running {
+                                    "Model running"
+                                } else {
+                                    "Model ready; start live view"
+                                }
+                                .to_owned(),
+                                if running {
+                                    "AI đang xử lý"
+                                } else {
+                                    "Model sẵn sàng; bật live view"
+                                }
+                                .to_owned(),
+                                String::new(),
+                            );
+                        }
+                    }
+                }
+                InferenceEvent::AnnotationModeChanged(generation, epoch, mode) => {
+                    if generation == self.model_generation && epoch == self.live_epoch {
+                        self.annotation_mode = mode;
+                        self.ui.annotation_mode(mode);
+                        self.log("INFO", format!("AI result display: {:?}", mode));
+                        if self.model_source == ModelSource::Image && !self.model_looping {
+                            if let Some(LoopInput::Image(path)) = self.model_input.clone() {
+                                self.handle(Command::TestModelImage(path));
+                                return;
+                            }
+                        }
+                        let (english, vietnamese) = if self.model_looping {
+                            ("Image loop running", "Đang detect ảnh liên tục")
+                        } else if self.model_source == ModelSource::Image {
+                            ("Model ready; choose an image", "Model sẵn sàng; chọn ảnh")
+                        } else if self.stream.is_some() {
+                            ("Model running", "AI đang xử lý")
+                        } else {
+                            (
+                                "Model ready; start live view",
+                                "Model sẵn sàng; bật live view",
+                            )
+                        };
+                        self.ui.model_status(
+                            true,
+                            false,
+                            english.to_owned(),
+                            vietnamese.to_owned(),
+                            String::new(),
+                        );
+                    }
+                }
                 InferenceEvent::Unloaded(generation) => {
                     if generation == self.model_generation && !self.exporting_model {
                         self.model_ready = false;
@@ -1793,6 +2203,8 @@ impl Worker {
                 InferenceEvent::Failed(generation, error) => {
                     if generation == self.model_generation {
                         self.model_ready = false;
+                        self.model_looping = false;
+                        self.ui.model_looping(false);
                         self.log("ERROR", format!("Model inference: {error}"));
                         self.ui.model_clear_result();
                         self.ui
@@ -1810,13 +2222,35 @@ impl Worker {
                         self.ui.model_image_error(english, vietnamese);
                     }
                 }
+                InferenceEvent::LoopSkipped(generation, epoch, path, error) => {
+                    if generation == self.model_generation
+                        && epoch == self.live_epoch
+                        && self.model_looping
+                    {
+                        self.log("WARN", format!("Skipped {}: {error}", path.display()));
+                    }
+                }
+                InferenceEvent::LoopFailed(generation, epoch, error) => {
+                    if generation == self.model_generation
+                        && epoch == self.live_epoch
+                        && self.model_looping
+                    {
+                        self.model_looping = false;
+                        self.ui.model_looping(false);
+                        self.log("ERROR", format!("Image loop stopped: {error}"));
+                        self.ui.model_image_error(
+                            "No readable images; check the selection",
+                            "Không có ảnh đọc được; kiểm tra lựa chọn",
+                        );
+                    }
+                }
                 InferenceEvent::Result(result) => {
                     if result.generation == self.model_generation
                         && result.frame_epoch == self.live_epoch
                         && result.source == self.model_source
                         && (result.source == ModelSource::Image || self.stream.is_some())
                     {
-                        if result.source == ModelSource::Image {
+                        if result.source == ModelSource::Image && !result.continuous {
                             self.ui.model_status(
                                 true,
                                 false,

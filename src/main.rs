@@ -51,7 +51,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .get(position + 3)
             .ok_or("--benchmark-image requires a run count")?
             .parse::<usize>()?;
-        return inference::benchmark_image(model.as_ref(), image.as_ref(), runs)
+        let input_size = args
+            .get(position + 4)
+            .map(|value| {
+                inference::InputSize::from_user(value).ok_or(
+                    "Input size must be a multiple of 32 from 64 to 2048 (e.g. 704 or 704x704)",
+                )
+            })
+            .transpose()?;
+        return inference::benchmark_image(model.as_ref(), image.as_ref(), runs, input_size)
             .map_err(Into::into);
     }
     if let Some(position) = args.iter().position(|arg| arg == "--export-onnx") {
@@ -250,6 +258,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         {
             let _ = send.send(worker::Command::TestModelImage(path));
         }
+    });
+    let send = sender.clone();
+    ui.on_pick_model_folder(move || {
+        if let Some(path) = rfd::FileDialog::new().pick_folder() {
+            let _ = send.send(worker::Command::SelectModelFolder(path));
+        }
+    });
+    let send = sender.clone();
+    ui.on_start_model_loop(move || {
+        let _ = send.send(worker::Command::StartModelLoop);
+    });
+    let send = sender.clone();
+    ui.on_stop_model_loop(move || {
+        let _ = send.send(worker::Command::StopModelLoop);
+    });
+    let send = sender.clone();
+    ui.on_open_model_detail(move || {
+        let _ = send.send(worker::Command::OpenModelDetail);
+    });
+    let send = sender.clone();
+    ui.on_close_model_detail(move || {
+        let _ = send.send(worker::Command::CloseModelDetail);
+    });
+    let send = sender.clone();
+    ui.on_apply_model_input_size(move |value| {
+        let _ = send.send(worker::Command::SetModelInputSize(value.to_string()));
+    });
+    let send = sender.clone();
+    ui.on_reset_model_input_size(move || {
+        let _ = send.send(worker::Command::ResetModelInputSize);
+    });
+    let send = sender.clone();
+    ui.on_set_model_annotation_mode(move |index| {
+        let _ = send.send(worker::Command::SetAnnotationMode(index));
     });
     let weak = ui.as_weak();
     ui.on_change_language(move |index| {

@@ -43,6 +43,14 @@ export component AppWindow inherits Window {
     in-out property <bool> has-preview: false;
     in-out property <bool> has-snapshot: false;
     in-out property <image> preview;
+    in-out property <int> preview-width: 4;
+    in-out property <int> preview-height: 3;
+    private property <float> preview-aspect: root.preview-height * 1.0 / root.preview-width;
+    private property <length> live-panel-height: Math.max(310px, Math.min(root.height * 0.76, (root.width - 28px) * root.preview-aspect + 58px));
+    in-out property <bool> live-detail-open: false;
+    private property <int> live-detail-zoom-index: 0;
+    private property <float> live-detail-fit-scale: Math.min((root.width - 64px) / (root.preview-width * 1px), (root.height - 126px) / (root.preview-height * 1px));
+    private property <float> live-detail-scale: root.live-detail-zoom-index == 0 ? root.live-detail-fit-scale : root.live-detail-zoom-index == 1 ? 1 : 2;
     in-out property <image> snapshot;
     in-out property <string> status-text: "Ready";
     in-out property <string> saved-path: "";
@@ -65,7 +73,24 @@ export component AppWindow inherits Window {
     in-out property <string> model-processing-ms: "—";
     in-out property <string> model-processed-fps: "—";
     in-out property <string> model-age-ms: "—";
+    in-out property <bool> model-looping: false;
+    in-out property <int> model-processed-images: 0;
     in-out property <image> model-preview;
+    in-out property <string> model-input-size: "";
+    in-out property <string> model-default-size: "";
+    in-out property <string> model-size-draft: "";
+    in-out property <int> model-size-source: 0;
+    in-out property <string> model-size-error: "";
+    in-out property <int> model-annotation-mode: 1;
+    in-out property <float> model-result-aspect: 0.32;
+    private property <length> model-panel-height: 299px + Math.max(170px, Math.min(520px, (root.width - 40px) * root.model-result-aspect));
+    in-out property <bool> model-detail-open: false;
+    in-out property <image> model-detail-image;
+    in-out property <int> model-detail-width: 1;
+    in-out property <int> model-detail-height: 1;
+    private property <int> model-detail-zoom-index: 0;
+    private property <float> model-detail-fit-scale: Math.min((root.width - 64px) / (root.model-detail-width * 1px), (root.height - 126px) / (root.model-detail-height * 1px));
+    private property <float> model-detail-scale: root.model-detail-zoom-index == 0 ? root.model-detail-fit-scale : root.model-detail-zoom-index == 1 ? 1 : root.model-detail-zoom-index == 2 ? 2 : 4;
     private property <bool> confirm-model-export: false;
     in-out property <[FeatureRow]> feature-rows: [];
     in-out property <[QuickFeatureRow]> quick-features: [];
@@ -127,6 +152,14 @@ export component AppWindow inherits Window {
     callback unload-model();
     callback select-model-source(int);
     callback pick-model-image();
+    callback pick-model-folder();
+    callback start-model-loop();
+    callback stop-model-loop();
+    callback open-model-detail();
+    callback close-model-detail();
+    callback apply-model-input-size(string);
+    callback reset-model-input-size();
+    callback set-model-annotation-mode(int);
 
     VerticalLayout {
         padding: 14px;
@@ -284,7 +317,7 @@ export component AppWindow inherits Window {
                 width: parent.width;
                 height: parent.height;
                 horizontal-scrollbar-policy: always-off;
-                content-height: Math.max(self.visible-height, root.width < 920px ? 955px : 775px);
+                content-height: Math.max(self.visible-height, (root.width < 920px ? 425px : 255px) + root.live-panel-height + root.model-panel-height + 20px);
 
             VerticalLayout {
                 width: monitor-scroll.visible-width;
@@ -292,8 +325,7 @@ export component AppWindow inherits Window {
                 spacing: 10px;
 
             Rectangle {
-                vertical-stretch: 1;
-                min-height: 260px;
+                height: root.live-panel-height;
                 background: #ffffff;
                 border-radius: 8px;
                 border-width: 1px;
@@ -303,12 +335,22 @@ export component AppWindow inherits Window {
                     height: parent.height;
                     padding: 10px;
                     spacing: 6px;
-                    Text {
-                        height: 20px;
-                        text: root.language-index == 1 ? "XEM TRỰC TIẾP" : "LIVE VIEW";
-                        color: #46566b;
-                        font-size: 13px;
-                        font-weight: 700;
+                    HorizontalLayout {
+                        height: 31px;
+                        Text {
+                            text: root.language-index == 1 ? "XEM TRỰC TIẾP" : "LIVE VIEW";
+                            color: #46566b;
+                            font-size: 13px;
+                            font-weight: 700;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                        }
+                        ActionButton {
+                            text: root.language-index == 1 ? "Xem lớn" : "Expand";
+                            tone: 1;
+                            enabled: root.has-preview;
+                            clicked => { root.live-detail-zoom-index = 0; root.live-detail-open = true; }
+                        }
                     }
                     Rectangle {
                         vertical-stretch: 1;
@@ -418,7 +460,7 @@ export component AppWindow inherits Window {
                 }
             }
             ModelPanel {
-                height: 220px;
+                height: root.model-panel-height;
                 language-index: root.language-index;
                 pt-path: root.model-pt-path;
                 onnx-path: root.model-path;
@@ -434,13 +476,28 @@ export component AppWindow inherits Window {
                 processing-ms: root.model-processing-ms;
                 processed-fps: root.model-processed-fps;
                 age-ms: root.model-age-ms;
+                looping: root.model-looping;
+                processed-images: root.model-processed-images;
                 result-image: root.model-preview;
+                current-size: root.model-input-size;
+                default-size: root.model-default-size;
+                size-draft <=> root.model-size-draft;
+                size-source: root.model-size-source;
+                annotation-mode: root.model-annotation-mode;
+                size-error: root.model-size-error;
+                apply-size(value) => { root.model-busy = true; root.apply-model-input-size(value); }
+                reset-size => { root.model-busy = true; root.reset-model-input-size(); }
+                set-annotation-mode(index) => { root.model-busy = true; root.set-model-annotation-mode(index); }
                 pick-pt => { root.pick-pt-model(); }
                 export-model(path) => { root.confirm-model-export = true; }
                 pick-onnx => { root.pick-onnx-model(); }
                 unload-model => { root.unload-model(); }
                 select-source(index) => { root.select-model-source(index); }
                 pick-image => { root.pick-model-image(); }
+                pick-folder => { root.pick-model-folder(); }
+                start-loop => { root.start-model-loop(); }
+                stop-loop => { root.stop-model-loop(); }
+                open-detail => { root.model-detail-zoom-index = 0; root.open-model-detail(); }
             }
             }
             }
@@ -847,6 +904,200 @@ export component AppWindow inherits Window {
                             root.close();
                         }
                     }
+                }
+            }
+        }
+    }
+
+    if root.live-detail-open : Rectangle {
+        width: parent.width;
+        height: parent.height;
+        background: #111a27d9;
+        TouchArea { width: parent.width; height: parent.height; }
+        Rectangle {
+            x: 18px;
+            y: 18px;
+            width: parent.width - 36px;
+            height: parent.height - 36px;
+            background: #ffffff;
+            border-radius: 8px;
+            VerticalLayout {
+                width: parent.width;
+                height: parent.height;
+                padding: 10px;
+                spacing: 8px;
+                HorizontalLayout {
+                    height: 34px;
+                    spacing: 6px;
+                    Text {
+                        text: (root.language-index == 1 ? "ẢNH XEM TRƯỚC  ·  " : "LIVE PREVIEW  ·  ") + root.preview-width + " × " + root.preview-height;
+                        color: #172334;
+                        font-size: 14px;
+                        font-weight: 700;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                        overflow: elide;
+                    }
+                    ActionButton {
+                        text: root.language-index == 1 ? "Vừa khung" : "Fit";
+                        tone: root.live-detail-zoom-index == 0 ? 1 : 0;
+                        clicked => { root.live-detail-zoom-index = 0; }
+                    }
+                    ActionButton {
+                        text: "100%";
+                        tone: root.live-detail-zoom-index == 1 ? 1 : 0;
+                        clicked => { root.live-detail-zoom-index = 1; }
+                    }
+                    ActionButton {
+                        text: "200%";
+                        tone: root.live-detail-zoom-index == 2 ? 1 : 0;
+                        clicked => { root.live-detail-zoom-index = 2; }
+                    }
+                    ActionButton {
+                        text: root.language-index == 1 ? "Đóng" : "Close";
+                        tone: 5;
+                        clicked => { root.live-detail-open = false; }
+                    }
+                }
+                Rectangle {
+                    vertical-stretch: 1;
+                    background: #111a27;
+                    live-detail-scroll := ScrollView {
+                        width: parent.width;
+                        height: parent.height;
+                        horizontal-scrollbar-policy: as-needed;
+                        vertical-scrollbar-policy: as-needed;
+                        mouse-drag-pan-enabled: true;
+                        content-width: Math.max(self.visible-width, root.preview-width * 1px * root.live-detail-scale);
+                        content-height: Math.max(self.visible-height, root.preview-height * 1px * root.live-detail-scale);
+                        Rectangle {
+                            width: live-detail-scroll.content-width;
+                            height: live-detail-scroll.content-height;
+                            background: #111a27;
+                            Image {
+                                source: root.preview;
+                                width: root.preview-width * 1px * root.live-detail-scale;
+                                height: root.preview-height * 1px * root.live-detail-scale;
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2;
+                                image-fit: fill;
+                                accessible-label: "Live camera image enlarged";
+                            }
+                        }
+                    }
+                    if root.live : Rectangle {
+                        x: 12px;
+                        y: 12px;
+                        width: 132px;
+                        height: 30px;
+                        background: #111a27db;
+                        border-radius: 4px;
+                        Text {
+                            width: parent.width;
+                            height: parent.height;
+                            text: "● LIVE  " + root.actual-fps + " FPS";
+                            color: #ffffff;
+                            font-size: 12px;
+                            font-weight: 700;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+                Text {
+                    height: 16px;
+                    text: root.language-index == 1 ? "Kéo ảnh để di chuyển khi phóng to" : "Drag to pan when zoomed";
+                    color: #61748c;
+                    font-size: 11px;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+
+    if root.model-detail-open : Rectangle {
+        width: parent.width;
+        height: parent.height;
+        background: #111a27d9;
+        TouchArea { width: parent.width; height: parent.height; }
+        Rectangle {
+            x: 18px;
+            y: 18px;
+            width: parent.width - 36px;
+            height: parent.height - 36px;
+            background: #ffffff;
+            border-radius: 8px;
+            VerticalLayout {
+                width: parent.width;
+                height: parent.height;
+                padding: 10px;
+                spacing: 8px;
+                HorizontalLayout {
+                    height: 34px;
+                    spacing: 6px;
+                    Text {
+                        text: (root.language-index == 1 ? "ẢNH DETECT  ·  " : "DETECTION IMAGE  ·  ") + root.model-detail-width + " × " + root.model-detail-height;
+                        color: #172334;
+                        font-size: 14px;
+                        font-weight: 700;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                        overflow: elide;
+                    }
+                    ActionButton {
+                        text: root.language-index == 1 ? "Vừa khung" : "Fit";
+                        tone: root.model-detail-zoom-index == 0 ? 1 : 0;
+                        clicked => { root.model-detail-zoom-index = 0; }
+                    }
+                    ActionButton {
+                        text: "100%";
+                        tone: root.model-detail-zoom-index == 1 ? 1 : 0;
+                        clicked => { root.model-detail-zoom-index = 1; }
+                    }
+                    ActionButton {
+                        text: "200%";
+                        tone: root.model-detail-zoom-index == 2 ? 1 : 0;
+                        clicked => { root.model-detail-zoom-index = 2; }
+                    }
+                    ActionButton {
+                        text: "400%";
+                        tone: root.model-detail-zoom-index == 3 ? 1 : 0;
+                        clicked => { root.model-detail-zoom-index = 3; }
+                    }
+                    ActionButton {
+                        text: root.language-index == 1 ? "Đóng" : "Close";
+                        tone: 5;
+                        clicked => { root.model-detail-open = false; root.close-model-detail(); }
+                    }
+                }
+                detail-scroll := ScrollView {
+                    vertical-stretch: 1;
+                    horizontal-scrollbar-policy: as-needed;
+                    vertical-scrollbar-policy: as-needed;
+                    mouse-drag-pan-enabled: true;
+                    content-width: Math.max(self.visible-width, root.model-detail-width * 1px * root.model-detail-scale);
+                    content-height: Math.max(self.visible-height, root.model-detail-height * 1px * root.model-detail-scale);
+                    Rectangle {
+                        width: detail-scroll.content-width;
+                        height: detail-scroll.content-height;
+                        background: #111a27;
+                        Image {
+                            source: root.model-detail-image;
+                            width: root.model-detail-width * 1px * root.model-detail-scale;
+                            height: root.model-detail-height * 1px * root.model-detail-scale;
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
+                            image-fit: fill;
+                            accessible-label: "Frozen detection result at full image resolution";
+                        }
+                    }
+                }
+                Text {
+                    height: 16px;
+                    text: root.language-index == 1 ? "Kéo ảnh để di chuyển khi đã phóng to · Ảnh này đứng yên, AI vẫn chạy" : "Drag to pan when zoomed · This image stays frozen while AI continues";
+                    color: #61748c;
+                    font-size: 11px;
+                    vertical-alignment: center;
                 }
             }
         }

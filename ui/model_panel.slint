@@ -1,3 +1,4 @@
+import { LineEdit } from "std-widgets.slint";
 import { ActionButton } from "action_button.slint";
 
 export component ModelPanel inherits Rectangle {
@@ -16,23 +17,42 @@ export component ModelPanel inherits Rectangle {
     in property <string> processing-ms;
     in property <string> processed-fps;
     in property <string> age-ms;
+    in property <bool> looping;
+    in property <int> processed-images;
     in property <image> result-image;
+    in property <string> current-size;
+    in property <string> default-size;
+    in property <int> size-source;
+    in property <int> annotation-mode;
+    in-out property <string> size-draft;
+    in property <string> size-error;
+    callback apply-size(string);
+    callback reset-size();
+    callback set-annotation-mode(int);
+    callback open-detail();
     callback pick-pt();
     callback export-model(string);
     callback pick-onnx();
     callback unload-model();
     callback select-source(int);
     callback pick-image();
+    callback pick-folder();
+    callback start-loop();
+    callback stop-loop();
 
     background: #ffffff;
     border-radius: 8px;
     border-width: 1px;
     border-color: #dce2e9;
 
-    HorizontalLayout {
+    VerticalLayout {
         width: parent.width;
         height: parent.height;
         padding: 10px;
+        spacing: 8px;
+
+        HorizontalLayout {
+        height: 232px;
         spacing: 12px;
 
         VerticalLayout {
@@ -87,13 +107,13 @@ export component ModelPanel inherits Rectangle {
                 ActionButton {
                     text: "Live";
                     tone: root.source-index == 0 ? 2 : 0;
-                    enabled: root.ready;
+                    enabled: root.ready && !root.busy;
                     clicked => { root.select-source(0); }
                 }
                 ActionButton {
                     text: root.language-index == 1 ? "Ảnh" : "Image";
                     tone: root.source-index == 1 ? 2 : 0;
-                    enabled: root.ready;
+                    enabled: root.ready && !root.busy;
                     clicked => { root.select-source(1); }
                 }
                 ActionButton {
@@ -101,6 +121,24 @@ export component ModelPanel inherits Rectangle {
                     tone: 1;
                     enabled: root.ready && !root.busy;
                     clicked => { root.pick-image(); }
+                }
+            }
+            HorizontalLayout {
+                height: 31px;
+                spacing: 8px;
+                ActionButton {
+                    text: root.language-index == 1 ? "Chọn thư mục..." : "Choose folder...";
+                    tone: 1;
+                    enabled: root.ready && !root.busy;
+                    clicked => { root.pick-folder(); }
+                }
+                ActionButton {
+                    text: root.looping
+                        ? (root.language-index == 1 ? "Dừng lặp" : "Stop loop")
+                        : (root.language-index == 1 ? "Chạy lặp" : "Start loop");
+                    tone: root.looping ? 5 : 2;
+                    enabled: root.ready && !root.busy && (root.looping || root.image-path != "");
+                    clicked => { if (root.looping) { root.stop-loop(); } else { root.start-loop(); } }
                 }
             }
             HorizontalLayout {
@@ -175,7 +213,10 @@ export component ModelPanel inherits Rectangle {
                     }
                     Text {
                         text: root.source-index == 1
-                            ? (root.language-index == 1 ? "Ảnh thử" : "Test image")
+                            ? (root.looping || root.processed-images > 0
+                                ? "AI  " + root.processed-fps + " FPS  ·  " + root.processed-images +
+                                    (root.language-index == 1 ? " ảnh" : " images")
+                                : (root.language-index == 1 ? "Ảnh thử" : "Test image"))
                             : "AI  " + root.processed-fps + " FPS";
                         color: #087e8b;
                         font-size: 13px;
@@ -185,27 +226,6 @@ export component ModelPanel inherits Rectangle {
                     Rectangle { horizontal-stretch: 1; }
                 }
             }
-            Rectangle {
-                vertical-stretch: 1;
-                background: #111a27;
-                Image {
-                    source: root.result-image;
-                    width: parent.width;
-                    height: parent.height;
-                    image-fit: contain;
-                    accessible-label: "Last processed frame with object markers";
-                }
-                if !root.has-result : Text {
-                    width: parent.width;
-                    height: parent.height;
-                    text: root.source-index == 1
-                        ? (root.language-index == 1 ? "Mở ONNX rồi chọn ảnh để thử" : "Open ONNX and choose an image")
-                        : (root.language-index == 1 ? "Mở model và bật live view để xem kết quả" : "Open a model and start live view");
-                    color: #a8b5c5;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
-                }
-            }
             Text {
                 height: 16px;
                 text: root.has-result && root.source-index == 0
@@ -213,6 +233,110 @@ export component ModelPanel inherits Rectangle {
                     : "";
                 color: #61748c;
                 font-size: 11px;
+            }
+            HorizontalLayout {
+                height: 31px;
+                spacing: 6px;
+                Text {
+                    text: root.language-index == 1 ? "Đầu vào AI" : "AI input";
+                    color: #46566b;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                }
+                LineEdit {
+                    width: 104px;
+                    text <=> root.size-draft;
+                    enabled: root.ready && !root.busy && root.size-source != 2;
+                }
+                ActionButton {
+                    text: root.language-index == 1 ? "Áp dụng" : "Apply";
+                    tone: 3;
+                    enabled: root.ready && !root.busy && root.size-source != 2 && root.size-draft != root.current-size;
+                    clicked => { root.apply-size(root.size-draft); }
+                }
+                ActionButton {
+                    text: root.language-index == 1 ? "Theo model" : "Model size";
+                    tone: 1;
+                    enabled: root.ready && !root.busy && root.size-source != 2 && root.current-size != root.default-size;
+                    clicked => { root.reset-size(); }
+                }
+            }
+            Text {
+                height: 16px;
+                text: root.size-source == 2
+                    ? (root.language-index == 1 ? "ONNX cố định: " : "Fixed ONNX input: ") + root.default-size
+                    : root.size-source == 1
+                        ? (root.language-index == 1 ? "Theo metadata ONNX: " : "ONNX metadata: ") + root.default-size
+                        : root.ready
+                            ? (root.language-index == 1 ? "Không có imgsz · dự phòng " : "No imgsz · fallback ") + root.default-size
+                            : "";
+                color: #61748c;
+                font-size: 11px;
+            }
+            Text {
+                height: 18px;
+                text: root.size-error;
+                color: #b42332;
+                font-size: 11px;
+                overflow: elide;
+            }
+        }
+        }
+
+        HorizontalLayout {
+            height: 31px;
+            spacing: 6px;
+            Text {
+                text: root.language-index == 1 ? "KẾT QUẢ DETECT" : "DETECTION RESULT";
+                color: #46566b;
+                font-size: 12px;
+                font-weight: 700;
+                vertical-alignment: center;
+            }
+            Rectangle { horizontal-stretch: 1; }
+            ActionButton {
+                text: root.language-index == 1 ? "Chấm đỏ" : "Red dot";
+                tone: root.annotation-mode == 0 ? 5 : 0;
+                enabled: root.ready && !root.busy;
+                clicked => { if root.annotation-mode != 0 { root.set-annotation-mode(0); } }
+            }
+            ActionButton {
+                text: root.language-index == 1 ? "Box xanh" : "Green box";
+                tone: root.annotation-mode == 1 ? 2 : 0;
+                enabled: root.ready && !root.busy;
+                clicked => { if root.annotation-mode != 1 { root.set-annotation-mode(1); } }
+            }
+            ActionButton {
+                text: root.language-index == 1 ? "Phóng to" : "Zoom";
+                tone: 1;
+                enabled: root.has-result;
+                clicked => { root.open-detail(); }
+            }
+        }
+        Rectangle {
+            vertical-stretch: 1;
+            background: #111a27;
+            Image {
+                source: root.result-image;
+                width: parent.width;
+                height: parent.height;
+                image-fit: contain;
+                accessible-label: "Last processed frame with red dots or green bounding boxes";
+            }
+            if root.has-result : TouchArea {
+                width: parent.width;
+                height: parent.height;
+                clicked => { root.open-detail(); }
+            }
+            if !root.has-result : Text {
+                width: parent.width;
+                height: parent.height;
+                text: root.source-index == 1
+                    ? (root.language-index == 1 ? "Mở ONNX rồi chọn ảnh để thử" : "Open ONNX and choose an image")
+                    : (root.language-index == 1 ? "Mở model và bật live view để xem kết quả" : "Open a model and start live view");
+                color: #a8b5c5;
+                horizontal-alignment: center;
+                vertical-alignment: center;
             }
         }
     }
